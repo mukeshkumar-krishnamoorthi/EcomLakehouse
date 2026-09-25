@@ -1,0 +1,38 @@
+[project]
+name = "ecommerce-lakehouse"
+version = "0.1.0"
+description = "E-commerce Data Warehouse on AWS with DBT, Spark, Trino, and Airflow"
+readme = "README.md"
+authors = [
+    { name = "Mukeshkumar-krishnamoorthi", email = "mukesh2132000@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=3.0.6",
+    "psycopg[binary]>=3.3.6",
+    "pydantic>=2.13.5",
+    "python-dotenv>=1.2.3",
+    "pyyaml>=6.0.3",
+    "requests>=2.34.2",
+    "sqlalchemy>=2.1.1",
+]
+
+[project.scripts]
+ecomlakehouse = "ecomlakehouse:main"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
