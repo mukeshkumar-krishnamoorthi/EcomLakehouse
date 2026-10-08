@@ -35,36 +35,36 @@ The **EcomLakehouse** architecture extracts raw transactional entity records fro
 
 ```mermaid
 flowchart TD
-    subgraph Operational Source System
-        DB[(PostgreSQL 16<br/>ecommerce DB)]
-        SEED[Seed Data Generator<br/>seed_source.py]
-        INC_SEED[Live Activity Simulator<br/>incremental_seed_generator.py]
+    subgraph Operational["Operational Source System"]
+        DB[("PostgreSQL 16<br/>ecommerce DB")]
+        SEED["Seed Data Generator<br/>seed_source.py"]
+        INC_SEED["Live Activity Simulator<br/>incremental_seed_generator.py"]
     end
 
-    subgraph Airflow 3.3.2 Orchestration Cluster
-        SCHED[Airflow Scheduler]
-        APISVR[Airflow API Server]
-        PROC[DAG Processor]
-        META[(Airflow Postgres Metadata)]
+    subgraph Airflow["Airflow 3.3.2 Orchestration Cluster"]
+        SCHED["Airflow Scheduler"]
+        APISVR["Airflow API Server"]
+        PROC["DAG Processor"]
+        META[("Airflow Postgres Metadata")]
     end
 
-    subgraph Ingestion Pipeline Core
-        BATCH_INGEST[Full Batch Extractor<br/>ingestion/batch.py]
-        INC_INGEST[Incremental Extractor<br/>ingestion/incremental.py]
-        WRITER[Parquet Bronze Writer<br/>bronze/writer.py]
+    subgraph Ingestion["Ingestion Pipeline Core"]
+        BATCH_INGEST["Full Batch Extractor<br/>ingestion/batch.py"]
+        INC_INGEST["Incremental Extractor<br/>ingestion/incremental.py"]
+        WRITER["Parquet Bronze Writer<br/>bronze/writer.py"]
     end
 
-    subgraph Storage Layer
-        MINIO[MinIO / AWS S3<br/>Bucket: ecommerce-lake]
-        BRONZE[Bronze Layer<br/>s3://ecommerce-lake/bronze/{table}/...]
+    subgraph Storage["Storage Layer"]
+        MINIO["MinIO / AWS S3<br/>Bucket: ecommerce-lake"]
+        BRONZE["Bronze Layer<br/>s3://ecommerce-lake/bronze/{table}/..."]
     end
 
-    SEED -->|Initial 10k orders/1k customers| DB
-    INC_SEED -->|Simulates live orders, updates & payments| DB
+    SEED -->|"Initial 10k orders / 1k customers"| DB
+    INC_SEED -->|"Simulates live orders, updates & payments"| DB
 
-    SCHED -->|Trigger Every 10 mins| INC_SEED
-    SCHED -->|Trigger Every 30 mins| INC_INGEST
-    SCHED -->|Manual/Batch Execution| BATCH_INGEST
+    SCHED -->|"Trigger Every 10 mins"| INC_SEED
+    SCHED -->|"Trigger Every 30 mins"| INC_INGEST
+    SCHED -->|"Manual / Batch Execution"| BATCH_INGEST
 
     DB --> BATCH_INGEST
     DB --> INC_INGEST
@@ -72,7 +72,7 @@ flowchart TD
     BATCH_INGEST --> WRITER
     INC_INGEST --> WRITER
 
-    WRITER -->|Write Partitioned Parquet| BRONZE
+    WRITER -->|"Write Partitioned Parquet"| BRONZE
 ```
 
 ---
@@ -81,11 +81,11 @@ flowchart TD
 
 The lakehouse adopts the standard **Medallion Pattern** for data management:
 
-| Layer | Path / Target | Storage Format | Description | Status |
-| :--- | :--- | :--- | :--- | :--- |
-| **Bronze** | `s3://ecommerce-lake/bronze/{table}/ingestion_date=YYYY-MM-DD/` | Apache Parquet | Append-only raw data extracted directly from source tables, immutable, append partitioned by ingestion timestamp. | **Active** |
-| **Silver** | `s3://ecommerce-lake/silver/` | Delta / Iceberg / Parquet | Cleansed, deduplicated, CDC updated, schema-enforced entity tables. | *Planned* |
-| **Gold** | `s3://ecommerce-lake/gold/` | Dimensional Models / Marts | Star-schema analytics, KPI aggregates (Revenue, Retention, Sales Funnels). | *Planned* |
+| Layer      | Path / Target                                                   | Storage Format             | Description                                                                                                       | Status     |
+| :--------- | :-------------------------------------------------------------- | :------------------------- | :---------------------------------------------------------------------------------------------------------------- | :--------- |
+| **Bronze** | `s3://ecommerce-lake/bronze/{table}/ingestion_date=YYYY-MM-DD/` | Apache Parquet             | Append-only raw data extracted directly from source tables, immutable, append partitioned by ingestion timestamp. | **Active** |
+| **Silver** | `s3://ecommerce-lake/silver/`                                   | Delta / Iceberg / Parquet  | Cleansed, deduplicated, CDC updated, schema-enforced entity tables.                                               | _Planned_  |
+| **Gold**   | `s3://ecommerce-lake/gold/`                                     | Dimensional Models / Marts | Star-schema analytics, KPI aggregates (Revenue, Retention, Sales Funnels).                                        | _Planned_  |
 
 ---
 
@@ -189,11 +189,13 @@ erDiagram
 ## 🧩 Key Components & Modules
 
 ### 1. Ingestion Engine (`src/ecomlakehouse/ingestion/`)
+
 - **`postgres.py`**: Handles SQLAlchemy connection pooling and executes optimized pandas SQL queries for batch and timestamp-based incremental extracts.
 - **`batch.py`**: Executes full snapshot extractions across all 8 transactional tables, optionally wiping prior raw landed objects in Bronze before reloading.
 - **`incremental.py`**: Leverages Airflow execution interval watermarks (`prev_data_interval_end_success` to `data_interval_end`) to fetch only newly inserted or modified records (`updated_at` filter).
 
 ### 2. Bronze Writer (`src/ecomlakehouse/bronze/writer.py`)
+
 - Transforms pandas DataFrames into compressed Parquet buffers via PyArrow.
 - Streams Parquet files to MinIO/S3 using the following object key structure:
   ```text
@@ -201,6 +203,7 @@ erDiagram
   ```
 
 ### 3. Data Generator Engine (`src/ecomlakehouse/generator/`)
+
 - **`seed_source.py`**: Performs initial bootstrapping of master data (categories, stores, payment methods), 1,000 customers, 100 products, and 10,000 historic orders.
 - **`incremental_seed_generator.py`**: Simulates production e-commerce activity:
   - Registers 5–15 new customers per cycle.
@@ -210,6 +213,7 @@ erDiagram
   - Drives state machine updates for active orders (`PENDING` $\rightarrow$ `CONFIRMED` $\rightarrow$ `PROCESSING` $\rightarrow$ `SHIPPED` $\rightarrow$ `DELIVERED`).
 
 ### 4. Storage Utility (`src/ecomlakehouse/utils/storage.py`)
+
 - Centralized Boto3 S3 client creator configured for MinIO or AWS S3 endpoint authentication, S3v4 signature protocols, and bucket configuration.
 
 ---
@@ -302,19 +306,20 @@ NEW_ORDERS_MAX=25
 
 ## 🖥️ Port Matrix & Services Overview
 
-| Container Service | Exposed Host Port | Container Port | Service Description | Credentials |
-| :--- | :--- | :--- | :--- | :--- |
-| **`ecom-postgres`** | `5441` | `5432` | Source E-Commerce PostgreSQL DB | `ecom_user` / `ecom_password` |
-| **`ecom-minio` (API)** | `9000` | `9000` | S3 API Endpoint | `minioadmin` / `minioadmin123` |
-| **`ecom-minio` (Console)**| `9001` | `9001` | MinIO Web Console UI | `minioadmin` / `minioadmin123` |
-| **`airflow-apiserver`** | `8080` | `8080` | Airflow Web UI & API | `airflow` / `airflow` |
-| **`airflow-postgres`** | `5440` | `5432` | Airflow Metadata Storage DB | `airflow` / `airflow` |
+| Container Service          | Exposed Host Port | Container Port | Service Description             | Credentials                    |
+| :------------------------- | :---------------- | :------------- | :------------------------------ | :----------------------------- |
+| **`ecom-postgres`**        | `5441`            | `5432`         | Source E-Commerce PostgreSQL DB | `ecom_user` / `ecom_password`  |
+| **`ecom-minio` (API)**     | `9000`            | `9000`         | S3 API Endpoint                 | `minioadmin` / `minioadmin123` |
+| **`ecom-minio` (Console)** | `9001`            | `9001`         | MinIO Web Console UI            | `minioadmin` / `minioadmin123` |
+| **`airflow-apiserver`**    | `8080`            | `8080`         | Airflow Web UI & API            | `airflow` / `airflow`          |
+| **`airflow-postgres`**     | `5440`            | `5432`         | Airflow Metadata Storage DB     | `airflow` / `airflow`          |
 
 ---
 
 ## ⚡ Prerequisites
 
 Ensure the following tools are installed on your host environment:
+
 1. [Docker](https://www.docker.com/) & Docker Compose (v2.20+)
 2. [Python 3.11+](https://www.python.org/)
 3. [`uv`](https://astral.sh/uv) package manager
@@ -325,6 +330,7 @@ Ensure the following tools are installed on your host environment:
 ## 🚀 Step-by-Step Setup & Getting Started
 
 ### Step 1: Clone Repository & Setup Virtual Environment
+
 ```bash
 git clone https://github.com/mukeshkumar-krishnamoorthi/EcomLakehouse.git
 cd EcomLakehouse
@@ -334,27 +340,35 @@ uv sync
 ```
 
 ### Step 2: Configure Environment Files
+
 ```bash
 cp .env.example .env
 ```
 
 ### Step 3: Create Docker Network
+
 Create the shared external bridge network required for cross-container communication:
+
 ```bash
 docker network create ecom-lakehouse-network
 ```
 
 ### Step 4: Start Operational Services (PostgreSQL & MinIO)
+
 ```bash
 docker compose up -d
 ```
+
 Verify container health:
+
 ```bash
 docker compose ps
 ```
 
 ### Step 5: Initialize Source Schema & Seed Initial Transactional Data
+
 Execute the DDL schema file and populate base historical records:
+
 ```bash
 # Apply schema tables
 uv run python -c "
@@ -371,7 +385,9 @@ uv run python src/ecomlakehouse/generator/seed_source.py
 ```
 
 ### Step 6: Create MinIO Storage Bucket
+
 Access MinIO Console at [`http://localhost:9001`](http://localhost:9001) or create bucket via CLI / Python script:
+
 ```bash
 uv run python -c "
 import boto3
@@ -383,11 +399,13 @@ print('Bucket ecommerce-lake ready!')
 ```
 
 ### Step 7: Launch Apache Airflow Stack
+
 ```bash
 docker compose -f airflow/docker-compose.yml up -d
 ```
 
 Check Airflow initialization logs:
+
 ```bash
 docker compose -f airflow/docker-compose.yml logs -f airflow-init
 ```
@@ -395,7 +413,9 @@ docker compose -f airflow/docker-compose.yml logs -f airflow-init
 Once initialized, open the Airflow UI at [`http://localhost:8080`](http://localhost:8080) (User: `airflow`, Password: `airflow`).
 
 ### Step 8: Configure Airflow PostgreSQL Connection
+
 In the Airflow Web UI:
+
 1. Navigate to **Admin** $\rightarrow$ **Connections**.
 2. Add a new Connection:
    - **Connection Id**: `ecom_postgres`
@@ -411,12 +431,12 @@ In the Airflow Web UI:
 
 ## 🔄 Airflow Orchestration & DAGs
 
-| DAG ID | Schedule | Catchup | Description |
-| :--- | :--- | :--- | :--- |
-| `ecom_initial_bronze_ingestion` | Manual (`None`) | `False` | Performs full snapshot batch extractions for all source tables and writes Parquet objects to Bronze S3 storage. |
-| `incremental_ingestion` | `0/30 * * * *` (Every 30m) | `False` | Watermark-driven extract fetching records where `updated_at` falls between `prev_data_interval_end_success` and `data_interval_end`. |
-| `incremental_seed_generator` | `*/10 * * * *` (Every 10m) | `False` | Simulates real-time e-commerce user activity (new user signups, order placements, payments, updates). |
-| `test_ecom_postgres` | Manual | `False` | Verification DAG to test PostgreSQL hook connectivity inside Airflow tasks. |
+| DAG ID                          | Schedule                   | Catchup | Description                                                                                                                          |
+| :------------------------------ | :------------------------- | :------ | :----------------------------------------------------------------------------------------------------------------------------------- |
+| `ecom_initial_bronze_ingestion` | Manual (`None`)            | `False` | Performs full snapshot batch extractions for all source tables and writes Parquet objects to Bronze S3 storage.                      |
+| `incremental_ingestion`         | `0/30 * * * *` (Every 30m) | `False` | Watermark-driven extract fetching records where `updated_at` falls between `prev_data_interval_end_success` and `data_interval_end`. |
+| `incremental_seed_generator`    | `*/10 * * * *` (Every 10m) | `False` | Simulates real-time e-commerce user activity (new user signups, order placements, payments, updates).                                |
+| `test_ecom_postgres`            | Manual                     | `False` | Verification DAG to test PostgreSQL hook connectivity inside Airflow tasks.                                                          |
 
 ---
 
