@@ -36,8 +36,9 @@ def run_incremental_ingestion(
     previous_success_end = kwargs["prev_data_interval_end_success"]
     previous_success_start = kwargs["prev_data_interval_start_success"]
 
+    logger.info("\n")
     logger.info(
-        "\nStarting pipeline: %s",
+        "Starting pipeline: %s",
         PIPELINE_NAME,
     )
 
@@ -75,8 +76,9 @@ def run_incremental_ingestion(
 
     for table_name in SOURCE_TABLES:
 
+        logger.info("\n")
         logger.info(
-            "\nStarting processing for table: %s",
+            "Starting processing for table: %s",
             table_name,
         )
 
@@ -144,6 +146,6 @@ def run_incremental_ingestion(
             raise
 
     logger.info(
-        "\nPipeline completed successfully: %s",
+        "Pipeline completed successfully: %s",
         PIPELINE_NAME,
     )

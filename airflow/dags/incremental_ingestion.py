@@ -23,7 +23,7 @@ def incremental_ingestion():
     @task
     def incremental_load(**kwargs):
 
-        logger.info("\nStarting incremental ingestion")
+        logger.info("Starting incremental ingestion")
 
         engine = get_connection(conn_id="ecom_postgres")
 
@@ -34,7 +34,7 @@ def incremental_ingestion():
             **kwargs,
         )
 
-        logger.info("\nIncremental ingestion completed successfully")
+        logger.info("Incremental ingestion completed successfully")
 
     incremental_load()
 
