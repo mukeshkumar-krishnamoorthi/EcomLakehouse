@@ -22,6 +22,9 @@ services:
       timeout: 5s
       retries: 5
 
+    networks:
+      - ecom-lakehouse-network
+
 
   # Airflow API Server
   airflow-apiserver:
@@ -36,23 +39,43 @@ services:
 
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-
       AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-
+      AIRFLOW__API_AUTH__JWT_SECRET: "change-this-to-a-long-random-secret-8f7c3d91b5e24a6f"
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
         postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
-
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+
+      PYTHONPATH: /opt/ecomlakehouse/src
+      _PIP_ADDITIONAL_REQUIREMENTS: "faker psycopg[binary] sqlalchemy"
+
+      # Ecommerce PostgreSQL
+      POSTGRES_HOST: ecom-postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ecom_user
+      POSTGRES_PASSWORD: ecom_password
+      POSTGRES_DB: ecommerce
+
+      # MinIO
+      S3_ENDPOINT: http://ecom-minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin123
+      S3_BUCKET: ecommerce-lake
+      S3_REGION: us-east-1
 
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/logs:/opt/airflow/logs
+      - ./src:/opt/ecomlakehouse/src
 
     ports:
       - "8080:8080"
 
     command: api-server
+
+    networks:
+      - ecom-lakehouse-network
 
 
   # Airflow Scheduler
@@ -68,17 +91,38 @@ services:
 
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-
       AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-
+      AIRFLOW__API_AUTH__JWT_SECRET: "change-this-to-a-long-random-secret-8f7c3d91b5e24a6f"
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
         postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+
+      PYTHONPATH: /opt/ecomlakehouse/src
+      _PIP_ADDITIONAL_REQUIREMENTS: "faker psycopg[binary] sqlalchemy"
+
+      # Ecommerce PostgreSQL
+      POSTGRES_HOST: ecom-postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ecom_user
+      POSTGRES_PASSWORD: ecom_password
+      POSTGRES_DB: ecommerce
+
+      # MinIO
+      S3_ENDPOINT: http://ecom-minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin123
+      S3_BUCKET: ecommerce-lake
+      S3_REGION: us-east-1
 
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/logs:/opt/airflow/logs
+      - ./src:/opt/ecomlakehouse/src
 
     command: scheduler
+
+    networks:
+      - ecom-lakehouse-network
 
 
   # Airflow DAG Processor
@@ -94,17 +138,38 @@ services:
 
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-
       AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-
+      AIRFLOW__API_AUTH__JWT_SECRET: "change-this-to-a-long-random-secret-8f7c3d91b5e24a6f"
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
         postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+
+      PYTHONPATH: /opt/ecomlakehouse/src
+      _PIP_ADDITIONAL_REQUIREMENTS: "faker psycopg[binary] sqlalchemy"
+
+      # Ecommerce PostgreSQL
+      POSTGRES_HOST: ecom-postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ecom_user
+      POSTGRES_PASSWORD: ecom_password
+      POSTGRES_DB: ecommerce
+
+      # MinIO
+      S3_ENDPOINT: http://ecom-minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin123
+      S3_BUCKET: ecommerce-lake
+      S3_REGION: us-east-1
 
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/logs:/opt/airflow/logs
+      - ./src:/opt/ecomlakehouse/src
 
     command: dag-processor
+
+    networks:
+      - ecom-lakehouse-network
 
 
   # Airflow Initialization
@@ -118,34 +183,52 @@ services:
 
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-
       AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-
+      AIRFLOW__API_AUTH__JWT_SECRET: "change-this-to-a-long-random-secret-8f7c3d91b5e24a6f"
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
         postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
-
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
 
-      _AIRFLOW_DB_MIGRATE: "true"
+      PYTHONPATH: /opt/ecomlakehouse/src
+      _PIP_ADDITIONAL_REQUIREMENTS: "faker psycopg[binary] sqlalchemy"
 
-      _AIRFLOW_WWW_USER_CREATE: "true"
-      _AIRFLOW_WWW_USER_USERNAME: airflow
-      _AIRFLOW_WWW_USER_PASSWORD: airflow
-      _AIRFLOW_WWW_USER_FIRSTNAME: Mukeshkumar
-      _AIRFLOW_WWW_USER_LASTNAME: Krishnamoorthi
-      _AIRFLOW_WWW_USER_EMAIL: mukeshkumar.krishnamoothi@gmail.com
-      _AIRFLOW_WWW_USER_ROLE: Admin
+      # Ecommerce PostgreSQL
+      POSTGRES_HOST: ecom-postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ecom_user
+      POSTGRES_PASSWORD: ecom_password
+      POSTGRES_DB: ecommerce
+
+      # MinIO
+      S3_ENDPOINT: http://ecom-minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin123
+      S3_BUCKET: ecommerce-lake
+      S3_REGION: us-east-1
 
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/logs:/opt/airflow/logs
+      - ./src:/opt/ecomlakehouse/src
 
     entrypoint: /bin/bash
 
     command:
       - -c
       - |
+        set -e
+
+        echo "=========================================="
+        echo "Running Airflow database migration"
+        echo "=========================================="
+
         airflow db migrate
+
+        echo "=========================================="
+        echo "Creating Airflow admin user"
+        echo "=========================================="
+
         airflow users create \
           --username airflow \
           --password airflow \
@@ -153,6 +236,13 @@ services:
           --lastname User \
           --role Admin \
           --email admin@example.com || true
+
+        echo "=========================================="
+        echo "Airflow initialization complete"
+        echo "=========================================="
+
+    networks:
+      - ecom-lakehouse-network
 
 
   # Airflow CLI
@@ -166,15 +256,33 @@ services:
 
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-
       AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-
+      AIRFLOW__API_AUTH__JWT_SECRET: "change-this-to-a-long-random-secret-8f7c3d91b5e24a6f"
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
         postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+
+      PYTHONPATH: /opt/ecomlakehouse/src
+      _PIP_ADDITIONAL_REQUIREMENTS: "faker psycopg[binary] sqlalchemy"
+
+      # Ecommerce PostgreSQL
+      POSTGRES_HOST: ecom-postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ecom_user
+      POSTGRES_PASSWORD: ecom_password
+      POSTGRES_DB: ecommerce
+
+      # MinIO
+      S3_ENDPOINT: http://ecom-minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin123
+      S3_BUCKET: ecommerce-lake
+      S3_REGION: us-east-1
 
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/logs:/opt/airflow/logs
+      - ./src:/opt/ecomlakehouse/src
 
     entrypoint: /bin/bash
 
@@ -182,6 +290,14 @@ services:
       - -c
       - "airflow"
 
+    networks:
+      - ecom-lakehouse-network
 
+# Volume==
 volumes:
   airflow_postgres_data:
+
+# Networ==
+networks:
+  ecom-lakehouse-network:
+    external: true
