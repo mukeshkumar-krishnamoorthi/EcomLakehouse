@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "E-commerce Data Warehouse on AWS with DBT, Spark, Trino, and Airflow"
 readme = "README.md"
 authors = [
-    { name = "Mukeshkumar-krishnamoorthi", email = "mukesh2132000@gmail.com" }
+    { name = "Mukeshkumar-krishnamoorthi", email = "mukeshkumar.krishnamoorthi@gmail.com" }
 ]
 requires-python = ">=3.11"
 dependencies = [
