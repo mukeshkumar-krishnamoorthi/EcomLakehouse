@@ -1,9 +1,12 @@
 from sqlalchemy.engine import Engine
-
-from ecomlakehouse.bronze.writer import write_dataframe_to_bronze
-from ecomlakehouse.ingestion.postgres import extract_table
+import logging
 
 from ecomlakehouse.utils.storage import get_s3_client
+from ecomlakehouse.ingestion.postgres import extract_table
+from ecomlakehouse.bronze.writer import write_dataframe_to_bronze
+
+
+logger = logging.getLogger(__name__)
 
 
 SOURCE_TABLES = [
@@ -26,9 +29,14 @@ def clear_bronze() -> None:
     """
     Delete all objects under the Bronze S3 prefix.
     """
+
     s3 = get_s3_client()
 
-    print(f"Clearing s3://{BRONZE_BUCKET}/{BRONZE_PREFIX}")
+    logger.info(
+        "Bronze cleanup started | bucket=%s | prefix=%s",
+        BRONZE_BUCKET,
+        BRONZE_PREFIX,
+    )
 
     paginator = s3.get_paginator("list_objects_v2")
 
@@ -57,7 +65,16 @@ def clear_bronze() -> None:
 
         total_deleted += len(delete_objects)
 
-    print(f"Bronze cleared. Deleted {total_deleted} objects.")
+        logger.info(
+            "Bronze objects deleted | batch_count=%d | total_deleted=%d",
+            len(delete_objects),
+            total_deleted,
+        )
+
+    logger.info(
+        "Bronze cleanup completed | deleted_objects=%d",
+        total_deleted,
+    )
 
 
 def run_batch_ingestion(engine: Engine) -> None:
@@ -65,20 +82,71 @@ def run_batch_ingestion(engine: Engine) -> None:
     Run batch ingestion for all source tables.
     """
 
+    logger.info(
+        "Initial batch ingestion started | tables=%d",
+        len(SOURCE_TABLES),
+    )
+
     clear_bronze()
 
     for table_name in SOURCE_TABLES:
 
-        print(f"\nExtracting: {table_name}")
-
-        df = extract_table(
-            engine=engine,
-            table_name=table_name,
+        logger.info(
+            "Table ingestion started | table=%s",
+            table_name,
         )
 
-        print(f"Rows extracted: {len(df)}")
+        try:
+            logger.info(
+                "Extraction started | table=%s",
+                table_name,
+            )
 
-        write_dataframe_to_bronze(
-            df=df,
-            table_name=table_name,
-        )
+            df = extract_table(
+                engine=engine,
+                table_name=table_name,
+            )
+
+            logger.info(
+                "Extraction completed | "
+                "table=%s | rows=%d",
+                table_name,
+                len(df),
+            )
+
+            logger.info(
+                "Bronze write started | "
+                "table=%s | rows=%d",
+                table_name,
+                len(df),
+            )
+
+            object_key = write_dataframe_to_bronze(
+                df=df,
+                table_name=table_name,
+            )
+
+            logger.info(
+                "Bronze write completed | "
+                "table=%s | rows=%d | object_key=%s",
+                table_name,
+                len(df),
+                object_key,
+            )
+
+            logger.info(
+                "Table ingestion completed | table=%s",
+                table_name,
+            )
+
+        except Exception:
+            logger.exception(
+                "Table ingestion failed | table=%s",
+                table_name,
+            )
+            raise
+
+    logger.info(
+        "Initial batch ingestion completed | tables=%d",
+        len(SOURCE_TABLES),
+    )

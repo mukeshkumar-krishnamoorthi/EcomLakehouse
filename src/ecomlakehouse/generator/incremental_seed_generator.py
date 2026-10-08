@@ -1,32 +1,52 @@
 from __future__ import annotations
-
+import logging
 import os
-import uuid
 import random
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
-
 from faker import Faker
 from sqlalchemy import create_engine, text
 
 
-# ============================================================
+# LOGGING
+
+
+logger = logging.getLogger(__name__)
+
+
 # CONFIG
-# ============================================================
+
 
 postgres_host = os.getenv("POSTGRES_HOST", "localhost")
+
 postgres_port = os.getenv(
     "POSTGRES_PORT",
     "5441" if postgres_host == "localhost" else "5432",
 )
-postgres_user = os.getenv("POSTGRES_USER", "ecom_user")
-postgres_password = os.getenv("POSTGRES_PASSWORD", "ecom_password")
-postgres_db = os.getenv("POSTGRES_DB", "ecommerce")
+
+postgres_user = os.getenv(
+    "POSTGRES_USER",
+    "ecom_user",
+)
+
+postgres_password = os.getenv(
+    "POSTGRES_PASSWORD",
+    "ecom_password",
+)
+
+postgres_db = os.getenv(
+    "POSTGRES_DB",
+    "ecommerce",
+)
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    f"postgresql+psycopg://{postgres_user}:{postgres_password}@{postgres_host}:{postgres_port}/{postgres_db}",
+    f"postgresql+psycopg://"
+    f"{postgres_user}:{postgres_password}"
+    f"@{postgres_host}:{postgres_port}/{postgres_db}",
 )
+
 
 NEW_CUSTOMERS_MIN = int(
     os.getenv("NEW_CUSTOMERS_MIN", "5")
@@ -71,9 +91,8 @@ ORDER_DISCOUNT_PROBABILITY = 0.30
 PAYMENT_SUCCESS_PROBABILITY = 0.90
 
 
-# ============================================================
 # FAKER
-# ============================================================
+
 
 fake = Faker("en_IN")
 
@@ -82,9 +101,8 @@ random.seed(42)
 Faker.seed(42)
 
 
-# ============================================================
 # DATABASE
-# ============================================================
+
 
 engine = create_engine(
     DATABASE_URL,
@@ -92,9 +110,8 @@ engine = create_engine(
 )
 
 
-# ============================================================
 # MONEY
-# ============================================================
+
 
 def money(value: Decimal | float | int) -> Decimal:
     """
@@ -107,9 +124,8 @@ def money(value: Decimal | float | int) -> Decimal:
     )
 
 
-# ============================================================
 # CUSTOMERS
-# ============================================================
+
 
 def create_customers(
     connection,
@@ -160,9 +176,8 @@ def create_customers(
 
     return inserted
 
-# ============================================================
+
 # UPDATE CUSTOMERS
-# ============================================================
 
 
 def update_customers(
@@ -215,9 +230,8 @@ def update_customers(
     return updated
 
 
-# ============================================================
 # CUSTOMERS
-# ============================================================
+
 
 def get_customer_ids(connection) -> list[int]:
 
@@ -234,9 +248,8 @@ def get_customer_ids(connection) -> list[int]:
     )
 
 
-# ============================================================
 # PRODUCTS
-# ============================================================
+
 
 def get_products(connection) -> list[dict]:
     """
@@ -267,21 +280,14 @@ def get_products(connection) -> list[dict]:
     ]
 
 
-# ============================================================
 # SELECT PRODUCTS FOR ORDER
-# ============================================================
+
 
 def select_products_for_order(
     products: list[dict],
 ) -> list[dict]:
     """
     Select multiple REAL products for an order.
-
-    Example:
-
-        Product A × 1
-        Product B × 2
-        Product C × 1
     """
 
     if not products:
@@ -322,9 +328,8 @@ def select_products_for_order(
     return order_items
 
 
-# ============================================================
 # CREATE ORDER
-# ============================================================
+
 
 def create_order(
     connection,
@@ -517,9 +522,8 @@ def create_order(
     }
 
 
-# ============================================================
 # PAYMENT METHOD
-# ============================================================
+
 
 def get_payment_method_id(connection):
 
@@ -535,9 +539,8 @@ def get_payment_method_id(connection):
     ).scalar_one_or_none()
 
 
-# ============================================================
 # CREATE PAYMENT
-# ============================================================
+
 
 def create_payment(
     connection,
@@ -608,9 +611,7 @@ def create_payment(
     return payment_status
 
 
-# ============================================================
 # ORDER STATUS TRANSITIONS
-# ============================================================
 
 ORDER_STATUS_TRANSITIONS = {
     "PENDING": [
@@ -633,9 +634,8 @@ ORDER_STATUS_TRANSITIONS = {
 }
 
 
-# ============================================================
 # UPDATE ORDERS
-# ============================================================
+
 
 def update_orders(
     connection,
@@ -709,9 +709,8 @@ def update_orders(
     return updated
 
 
-# ============================================================
 # MAIN
-# ============================================================
+
 
 def run_incremental_seed_generation() -> None:
     """
@@ -722,15 +721,21 @@ def run_incremental_seed_generation() -> None:
     Airflow will call this function.
     """
 
+    logger.info(
+        "Incremental seed generation started"
+    )
+
     with engine.begin() as connection:
 
-        # ====================================================
         # 1. NEW CUSTOMERS
-        # ====================================================
-
         customer_count = random.randint(
             NEW_CUSTOMERS_MIN,
             NEW_CUSTOMERS_MAX,
+        )
+
+        logger.info(
+            "\nGenerating new customers | requested=%d",
+            customer_count,
         )
 
         customers_inserted = create_customers(
@@ -738,13 +743,20 @@ def run_incremental_seed_generation() -> None:
             customer_count,
         )
 
-        # ====================================================
-        # 2. CUSTOMER UPDATES
-        # ====================================================
+        logger.info(
+            "Customers inserted | count=%d",
+            customers_inserted,
+        )
 
+        # 2. CUSTOMER UPDATES
         customer_update_count = random.randint(
             CUSTOMER_UPDATES_MIN,
             CUSTOMER_UPDATES_MAX,
+        )
+
+        logger.info(
+            "\nUpdating existing customers | requested=%d",
+            customer_update_count,
         )
 
         customers_updated = update_customers(
@@ -752,12 +764,19 @@ def run_incremental_seed_generation() -> None:
             customer_update_count,
         )
 
-        # ====================================================
-        # 3. LOAD EXISTING CUSTOMERS
-        # ====================================================
+        logger.info(
+            "Customers updated | count=%d",
+            customers_updated,
+        )
 
+        # 3. LOAD EXISTING CUSTOMERS
         customer_ids = get_customer_ids(
             connection
+        )
+
+        logger.info(
+            "\nLoaded existing customers | count=%d",
+            len(customer_ids),
         )
 
         if not customer_ids:
@@ -766,12 +785,14 @@ def run_incremental_seed_generation() -> None:
                 "Seed customers before generating orders."
             )
 
-        # ====================================================
         # 4. LOAD ACTUAL PRODUCT CATALOG
-        # ====================================================
-
         products = get_products(
             connection
+        )
+
+        logger.info(
+            "\nLoaded product catalog | count=%d",
+            len(products),
         )
 
         if not products:
@@ -780,13 +801,15 @@ def run_incremental_seed_generation() -> None:
                 "Seed products before generating orders."
             )
 
-        # ====================================================
         # 5. CREATE NEW ORDERS
-        # ====================================================
-
         order_count = random.randint(
             NEW_ORDERS_MIN,
             NEW_ORDERS_MAX,
+        )
+
+        logger.info(
+            "\nGenerating new orders | requested=%d",
+            order_count,
         )
 
         orders_inserted = 0
@@ -799,26 +822,17 @@ def run_incremental_seed_generation() -> None:
 
         for _ in range(order_count):
 
-            # ----------------------------------------------
             # Select existing customer
-            # ----------------------------------------------
-
             customer_id = random.choice(
                 customer_ids
             )
 
-            # ----------------------------------------------
             # Select actual products
-            # ----------------------------------------------
-
             order_items = select_products_for_order(
                 products
             )
 
-            # ----------------------------------------------
             # Create order
-            # ----------------------------------------------
-
             order = create_order(
                 connection,
                 customer_id,
@@ -833,10 +847,7 @@ def run_incremental_seed_generation() -> None:
 
             generated_orders.append(order)
 
-            # ----------------------------------------------
             # Create payment
-            # ----------------------------------------------
-
             payment_status = create_payment(
                 connection,
                 order["order_id"],
@@ -848,13 +859,27 @@ def run_incremental_seed_generation() -> None:
             else:
                 failed_payments += 1
 
-        # ====================================================
-        # 6. UPDATE EXISTING ORDERS
-        # ====================================================
+        logger.info(
+            "Orders generated | orders=%d | order_items=%d",
+            orders_inserted,
+            order_items_inserted,
+        )
 
+        logger.info(
+            "Payments generated | successful=%d | failed=%d",
+            successful_payments,
+            failed_payments,
+        )
+
+        # 6. UPDATE EXISTING ORDERS
         order_update_count = random.randint(
             ORDER_UPDATES_MIN,
             ORDER_UPDATES_MAX,
+        )
+
+        logger.info(
+            "\nUpdating existing orders | requested=%d",
+            order_update_count,
         )
 
         orders_updated = update_orders(
@@ -862,66 +887,85 @@ def run_incremental_seed_generation() -> None:
             order_update_count,
         )
 
-        # ====================================================
-        # LOGGING
-        # ====================================================
-
-        print()
-        print("=" * 60)
-        print("ECOMMERCE INCREMENTAL SEED")
-        print("=" * 60)
-
-        print(
-            f"Customers inserted   : {customers_inserted}"
+        logger.info(
+            "Orders updated | count=%d",
+            orders_updated,
         )
 
-        print(
-            f"Customers updated    : {customers_updated}"
+        # 7. SUMMARY
+        logger.info("\n")
+        logger.info("=" * 60)
+        logger.info("ECOMMERCE INCREMENTAL SEED SUMMARY")
+        logger.info("=" * 60)
+
+        logger.info(
+            "Customers inserted   : %d",
+            customers_inserted,
         )
 
-        print(
-            f"Orders inserted      : {orders_inserted}"
+        logger.info(
+            "Customers updated    : %d",
+            customers_updated,
         )
 
-        print(
-            f"Orders updated       : {orders_updated}"
+        logger.info(
+            "Orders inserted      : %d",
+            orders_inserted,
         )
 
-        print(
-            f"Order items inserted : {order_items_inserted}"
+        logger.info(
+            "Orders updated       : %d",
+            orders_updated,
         )
 
-        print(
-            f"Payments successful  : {successful_payments}"
+        logger.info(
+            "Order items inserted : %d",
+            order_items_inserted,
         )
 
-        print(
-            f"Payments failed      : {failed_payments}"
+        logger.info(
+            "Payments successful  : %d",
+            successful_payments,
         )
 
-        print("=" * 60)
+        logger.info(
+            "Payments failed      : %d",
+            failed_payments,
+        )
 
-        # ====================================================
-        # SAMPLE ORDERS
-        # ====================================================
+        logger.info("=" * 60)
 
-        print()
-        print("Generated orders:")
+        # 8. SAMPLE ORDERS
+        logger.info(
+            "\nGenerated order samples | count=%d",
+            min(5, len(generated_orders)),
+        )
 
         for order in generated_orders[:5]:
 
-            print(
-                f"""
-                    Order #{order["order_id"]}
-                    Items     : {order["item_count"]}
-                    Subtotal  : ₹{order["subtotal"]}
-                    Discount  : ₹{order["discount"]}
-                    Tax       : ₹{order["tax"]}
-                    Shipping  : ₹{order["shipping"]}
-                    Total     : ₹{order["total"]}
-                """
+            logger.info(
+                "Order generated | "
+                "order_id=%s | "
+                "items=%d | "
+                "subtotal=%s | "
+                "discount=%s | "
+                "tax=%s | "
+                "shipping=%s | "
+                "total=%s",
+                order["order_id"],
+                order["item_count"],
+                order["subtotal"],
+                order["discount"],
+                order["tax"],
+                order["shipping"],
+                order["total"],
             )
 
+    logger.info(
+        "\nIncremental seed generation completed successfully"
+    )
 
+
+# ENTRY POINT
 if __name__ == "__main__":
     run_incremental_seed_generation()
