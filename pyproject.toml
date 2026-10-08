@@ -8,8 +8,11 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "boto3>=1.43.108",
+    "faker>=40.41.0",
     "pandas>=3.0.6",
     "psycopg[binary]>=3.3.6",
+    "pyarrow>=25.0.1",
     "pydantic>=2.13.5",
     "python-dotenv>=1.2.3",
     "pyyaml>=6.0.3",
@@ -23,6 +26,9 @@ ecomlakehouse = "ecomlakehouse:main"
 [build-system]
 requires = ["uv_build>=0.12.13,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "ecomlakehouse"
 
 [dependency-groups]
 dev = [
