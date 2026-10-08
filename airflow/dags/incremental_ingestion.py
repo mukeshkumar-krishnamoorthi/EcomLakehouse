@@ -1,9 +1,14 @@
+from ecomlakehouse.utils.postgres import get_connection
 from pendulum import datetime
 
 from airflow.sdk import dag, task
-from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 from ecomlakehouse.ingestion.incremental import run_incremental_ingestion
+from ecomlakehouse.utils.postgres import get_connection
+from ecomlakehouse.utils.logging_utils import get_logger
+
+
+logger = get_logger(__name__)
 
 
 @dag(
@@ -16,20 +21,22 @@ from ecomlakehouse.ingestion.incremental import run_incremental_ingestion
 def incremental_ingestion():
 
     @task
-    def ingest(**kwargs):
+    def incremental_load(**kwargs):
 
-        hook = PostgresHook(
-            postgres_conn_id="ecom_postgres"
-        )
+        logger.info("\nStarting incremental ingestion")
 
-        engine = hook.get_sqlalchemy_engine()
+        engine = get_connection(conn_id="ecom_postgres")
+
+        logger.info("Created SQLAlchemy engine")
 
         run_incremental_ingestion(
             engine,
-            **kwargs
+            **kwargs,
         )
 
-    ingest()
+        logger.info("\nIncremental ingestion completed successfully")
+
+    incremental_load()
 
 
 incremental_ingestion()
