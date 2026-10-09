@@ -17,7 +17,7 @@ def get_connection(conn_id: str = "ecom_postgres") -> Engine:
         Engine: SQLAlchemy engine for the given connection ID.
     """
 
-    logger.info("\nGetting connection for %s", conn_id)
+    logger.info("Getting connection for %s", conn_id)
 
     hook = PostgresHook(
         postgres_conn_id=conn_id

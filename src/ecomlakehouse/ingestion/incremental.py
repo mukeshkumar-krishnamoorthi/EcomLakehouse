@@ -77,10 +77,6 @@ def run_incremental_ingestion(
     for table_name in SOURCE_TABLES:
 
         logger.info("\n")
-        logger.info(
-            "Starting processing for table: %s",
-            table_name,
-        )
 
         try:
 
@@ -130,11 +126,6 @@ def run_incremental_ingestion(
                 "table=%s | rows=%d",
                 table_name,
                 len(df),
-            )
-
-            logger.info(
-                "Ingestion completed successfully | table=%s",
-                table_name,
             )
 
         except Exception:
