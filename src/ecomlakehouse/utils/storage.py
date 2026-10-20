@@ -4,6 +4,8 @@ import boto3
 from botocore.client import Config
 from dotenv import load_dotenv
 
+from airflow.sdk import Variable
+
 load_dotenv()
 
 
@@ -19,4 +21,16 @@ def get_s3_client():
 
 
 def get_bucket_name():
-    return os.environ["S3_BUCKET"]
+    """
+    Get the S3 bucket name from Airflow variables.
+    """
+
+    bucket_name = Variable.get("BUCKET")
+
+    if bucket_name is None:
+        bucket_name = os.getenv("S3_BUCKET")
+
+    if bucket_name is None:
+        raise ValueError("Bucket name not found in Airflow variables.")
+
+    return bucket_name

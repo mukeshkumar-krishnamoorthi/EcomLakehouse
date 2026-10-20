@@ -49,42 +49,42 @@ DATABASE_URL = os.getenv(
 
 
 NEW_CUSTOMERS_MIN = int(
-    os.getenv("NEW_CUSTOMERS_MIN", "5")
+    os.getenv("NEW_CUSTOMERS_MIN", "80")
 )
 
 NEW_CUSTOMERS_MAX = int(
-    os.getenv("NEW_CUSTOMERS_MAX", "15")
+    os.getenv("NEW_CUSTOMERS_MAX", "100")
 )
 
 NEW_ORDERS_MIN = int(
-    os.getenv("NEW_ORDERS_MIN", "10")
+    os.getenv("NEW_ORDERS_MIN", "140")
 )
 
 NEW_ORDERS_MAX = int(
-    os.getenv("NEW_ORDERS_MAX", "25")
+    os.getenv("NEW_ORDERS_MAX", "150")
 )
 
 CUSTOMER_UPDATES_MIN = int(
-    os.getenv("CUSTOMER_UPDATES_MIN", "1")
+    os.getenv("CUSTOMER_UPDATES_MIN", "40")
 )
 
 CUSTOMER_UPDATES_MAX = int(
-    os.getenv("CUSTOMER_UPDATES_MAX", "5")
+    os.getenv("CUSTOMER_UPDATES_MAX", "50")
 )
 
 ORDER_UPDATES_MIN = int(
-    os.getenv("ORDER_UPDATES_MIN", "2")
+    os.getenv("ORDER_UPDATES_MIN", "20")
 )
 
 ORDER_UPDATES_MAX = int(
-    os.getenv("ORDER_UPDATES_MAX", "10")
+    os.getenv("ORDER_UPDATES_MAX", "25")
 )
 
 MIN_PRODUCTS_PER_ORDER = 1
-MAX_PRODUCTS_PER_ORDER = 5
+MAX_PRODUCTS_PER_ORDER = 10
 
 MIN_QUANTITY = 1
-MAX_QUANTITY = 4
+MAX_QUANTITY = 5
 
 ORDER_DISCOUNT_PROBABILITY = 0.30
 

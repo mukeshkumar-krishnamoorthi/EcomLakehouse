@@ -7,7 +7,7 @@ from airflow.providers.standard.operators.bash import BashOperator
 with DAG(
     dag_id="incremental_seed_generator",
     start_date=datetime(2026, 10, 7),
-    schedule="*/10 * * * *",
+    schedule="*/5 * * * *",
     catchup=False,
     tags=["Incremental", "Seed"],
 ) as dag:
