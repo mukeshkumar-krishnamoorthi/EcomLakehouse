@@ -6,13 +6,13 @@ from ecomlakehouse.ingestion.batch import run_batch_ingestion
 
 
 @dag(
-    dag_id="ecom_initial_bronze_ingestion",
+    dag_id="initial_bronze_batch_ingestion",
     start_date=None,
     schedule=None,
     catchup=False,
-    tags=["Batch"],
+    tags=["Bronze", "Batch"],
 )
-def ecom_initial_bronze_ingestion():
+def initial_bronze_batch_ingestion():
     """
     Run initial batch ingestion for all source tables.
     """
@@ -33,4 +33,4 @@ def ecom_initial_bronze_ingestion():
     ingest()
 
 
-ecom_initial_bronze_ingestion()
+initial_bronze_batch_ingestion()

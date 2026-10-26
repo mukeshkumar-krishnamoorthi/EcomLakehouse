@@ -1,971 +1,720 @@
+"""
+Incremental Live Activity Seed Generator.
+
+Simulates real-time e-commerce user activity like Flipkart:
+- Generates new products each incremental batch
+- Generates 200 to 300+ authentic Indian customer registrations
+- Generates minimum 1,000 realistic orders with realistic cart items and Indian pricing
+- Generates 1,000 accurately linked payments (UPI, Cards, Net Banking, COD)
+- Simulates realistic order lifecycle transitions (PLACED -> CONFIRMED -> SHIPPED -> DELIVERED)
+- Updates customer details and product inventories
+- Runs via Airflow DAG (every minute) or standalone continuous streaming simulator
+"""
+
 from __future__ import annotations
+
+import argparse
 import logging
 import os
 import random
-import uuid
-from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
-from faker import Faker
-from sqlalchemy import create_engine, text
+import sys
+import time
+from datetime import UTC, datetime
+from decimal import Decimal
+
+from sqlalchemy import MetaData, create_engine, select, text
+
+from ecomlakehouse.generator.flipkart_catalog import (
+    generate_flipkart_product,
+    generate_indian_customer,
+    generate_payment_reference,
+    money,
+)
+
+# ---------------------------------------------------------------------------
+# LOGGING SETUP
+# ---------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("ecomlakehouse.generator")
 
 
-# LOGGING
-
-
-logger = logging.getLogger(__name__)
-
-
-# CONFIG
-
+# ---------------------------------------------------------------------------
+# CONFIGURATION
+# ---------------------------------------------------------------------------
 
 postgres_host = os.getenv("POSTGRES_HOST", "localhost")
-
 postgres_port = os.getenv(
     "POSTGRES_PORT",
     "5441" if postgres_host == "localhost" else "5432",
 )
-
-postgres_user = os.getenv(
-    "POSTGRES_USER",
-    "ecom_user",
-)
-
-postgres_password = os.getenv(
-    "POSTGRES_PASSWORD",
-    "ecom_password",
-)
-
-postgres_db = os.getenv(
-    "POSTGRES_DB",
-    "ecommerce",
-)
+postgres_user = os.getenv("POSTGRES_USER", "ecom_user")
+postgres_password = os.getenv("POSTGRES_PASSWORD", "ecom_password")
+postgres_db = os.getenv("POSTGRES_DB", "ecommerce")
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    f"postgresql+psycopg://"
-    f"{postgres_user}:{postgres_password}"
-    f"@{postgres_host}:{postgres_port}/{postgres_db}",
+    f"postgresql+psycopg://{postgres_user}:{postgres_password}@{postgres_host}:{postgres_port}/{postgres_db}",
 )
 
+# Incremental generation batch volumes
+NEW_PRODUCTS_MIN = int(os.getenv("NEW_PRODUCTS_MIN", "15"))
+NEW_PRODUCTS_MAX = int(os.getenv("NEW_PRODUCTS_MAX", "30"))
 
-NEW_CUSTOMERS_MIN = int(
-    os.getenv("NEW_CUSTOMERS_MIN", "80")
-)
+NEW_CUSTOMERS_MIN = int(os.getenv("NEW_CUSTOMERS_MIN", "200"))
+NEW_CUSTOMERS_MAX = int(os.getenv("NEW_CUSTOMERS_MAX", "300"))
 
-NEW_CUSTOMERS_MAX = int(
-    os.getenv("NEW_CUSTOMERS_MAX", "100")
-)
+NEW_ORDERS_MIN = int(os.getenv("NEW_ORDERS_MIN", "1000"))
+NEW_ORDERS_MAX = int(os.getenv("NEW_ORDERS_MAX", "1200"))
 
-NEW_ORDERS_MIN = int(
-    os.getenv("NEW_ORDERS_MIN", "140")
-)
+CUSTOMER_UPDATES_MIN = int(os.getenv("CUSTOMER_UPDATES_MIN", "40"))
+CUSTOMER_UPDATES_MAX = int(os.getenv("CUSTOMER_UPDATES_MAX", "80"))
 
-NEW_ORDERS_MAX = int(
-    os.getenv("NEW_ORDERS_MAX", "150")
-)
+ORDER_UPDATES_MIN = int(os.getenv("ORDER_UPDATES_MIN", "80"))
+ORDER_UPDATES_MAX = int(os.getenv("ORDER_UPDATES_MAX", "150"))
 
-CUSTOMER_UPDATES_MIN = int(
-    os.getenv("CUSTOMER_UPDATES_MIN", "40")
-)
-
-CUSTOMER_UPDATES_MAX = int(
-    os.getenv("CUSTOMER_UPDATES_MAX", "50")
-)
-
-ORDER_UPDATES_MIN = int(
-    os.getenv("ORDER_UPDATES_MIN", "20")
-)
-
-ORDER_UPDATES_MAX = int(
-    os.getenv("ORDER_UPDATES_MAX", "25")
-)
+PRODUCT_UPDATES_MIN = int(os.getenv("PRODUCT_UPDATES_MIN", "10"))
+PRODUCT_UPDATES_MAX = int(os.getenv("PRODUCT_UPDATES_MAX", "25"))
 
 MIN_PRODUCTS_PER_ORDER = 1
-MAX_PRODUCTS_PER_ORDER = 10
+MAX_PRODUCTS_PER_ORDER = 4
 
-MIN_QUANTITY = 1
-MAX_QUANTITY = 5
+ORDER_DISCOUNT_PROBABILITY = 0.35
+TAX_RATE = Decimal("0.18")  # Standard Indian GST
+FREE_SHIPPING_THRESHOLD = Decimal("500.00")  # Flipkart Plus threshold
+STANDARD_SHIPPING_FEE = Decimal("40.00")
 
-ORDER_DISCOUNT_PROBABILITY = 0.30
+# Order lifecycle transitions
+ORDER_STATUS_TRANSITIONS = {
+    "PLACED": ["CONFIRMED", "CANCELLED"],
+    "CONFIRMED": ["SHIPPED", "CANCELLED"],
+    "SHIPPED": ["DELIVERED"],
+}
 
-PAYMENT_SUCCESS_PROBABILITY = 0.90
-
-
-# FAKER
-
-
-fake = Faker("en_IN")
-
-# Deterministic randomness is useful while developing/testing.
-random.seed(42)
-Faker.seed(42)
-
-
-# DATABASE
-
+# ---------------------------------------------------------------------------
+# DATABASE INITIALIZATION
+# ---------------------------------------------------------------------------
 
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
 )
 
+metadata = MetaData()
+metadata.reflect(bind=engine)
 
-# MONEY
+customers_table = metadata.tables["customers"]
+products_table = metadata.tables["products"]
+orders_table = metadata.tables["orders"]
+order_items_table = metadata.tables["order_items"]
+payments_table = metadata.tables["payments"]
+categories_table = metadata.tables["categories"]
+stores_table = metadata.tables["stores"]
+payment_methods_table = metadata.tables["payment_methods"]
 
 
-def money(value: Decimal | float | int) -> Decimal:
+# ---------------------------------------------------------------------------
+# PRODUCT OPERATIONS
+# ---------------------------------------------------------------------------
+
+def create_incremental_products(connection, count: int) -> int:
     """
-    Always keep monetary values at two decimal places.
+    Generate and insert authentic Flipkart products across available categories.
     """
+    categories = connection.execute(
+        select(categories_table.c.category_id, categories_table.c.category_name)
+    ).all()
 
-    return Decimal(str(value)).quantize(
-        Decimal("0.01"),
-        rounding=ROUND_HALF_UP,
-    )
+    if not categories:
+        logger.warning("No categories found; skipping product generation")
+        return 0
+
+    max_product_id = connection.execute(
+        select(text("COALESCE(MAX(product_id), 0) FROM products"))
+    ).scalar() or 0
+
+    now = datetime.now(UTC)
+    product_rows = []
+
+    for i in range(1, count + 1):
+        cat_id, cat_name = random.choice(categories)
+        sku_num = max_product_id + i
+        item = generate_flipkart_product(cat_name, sku_num)
+
+        product_rows.append({
+            "category_id": cat_id,
+            "product_name": item["product_name"],
+            "sku": item["sku"],
+            "price": item["price"],
+            "stock_quantity": item["stock_quantity"],
+            "is_active": True,
+            "created_at": now,
+            "updated_at": now,
+        })
+
+    if product_rows:
+        connection.execute(products_table.insert(), product_rows)
+
+    return len(product_rows)
 
 
-# CUSTOMERS
-
-
-def create_customers(
-    connection,
-    count: int,
-) -> int:
+def update_products_inventory(connection, count: int) -> int:
     """
-    Simulate new customers registering in the application.
+    Simulate supplier restocks and promotional price revisions on existing products.
     """
+    products = connection.execute(
+        text(
+            "SELECT product_id, price, stock_quantity "
+            "FROM products ORDER BY RANDOM() LIMIT :limit"
+        ),
+        {"limit": count},
+    ).mappings().all()
 
-    inserted = 0
+    updated = 0
+    now = datetime.now(UTC)
+
+    for prod in products:
+        # 70% chance stock replenishment, 30% chance price offer
+        if random.random() < 0.70:
+            new_stock = prod["stock_quantity"] + random.randint(20, 150)
+            connection.execute(
+                text(
+                    "UPDATE products SET stock_quantity = :stock, updated_at = :now "
+                    "WHERE product_id = :id"
+                ),
+                {"stock": new_stock, "now": now, "id": prod["product_id"]},
+            )
+        else:
+            # 5% to 15% promotional discount or price adjustment
+            discount_pct = Decimal(str(random.choice([0.90, 0.95, 1.05])))
+            new_price = money(prod["price"] * discount_pct)
+            connection.execute(
+                text(
+                    "UPDATE products SET price = :price, updated_at = :now "
+                    "WHERE product_id = :id"
+                ),
+                {"price": new_price, "now": now, "id": prod["product_id"]},
+            )
+        updated += 1
+
+    return updated
+
+
+# ---------------------------------------------------------------------------
+# CUSTOMER OPERATIONS
+# ---------------------------------------------------------------------------
+
+def create_incremental_customers(connection, count: int) -> list[int]:
+    """
+    Simulate new Indian customers registering on Flipkart.
+    Returns the list of newly created customer IDs.
+    """
+    now = datetime.now(UTC)
+    customer_rows = []
 
     for _ in range(count):
+        cust = generate_indian_customer()
+        customer_rows.append({
+            "first_name": cust["first_name"],
+            "last_name": cust["last_name"],
+            "email": cust["email"],
+            "phone": cust["phone"],
+            "city": cust["city"],
+            "state": cust["state"],
+            "country": cust["country"],
+            "created_at": now,
+            "updated_at": now,
+        })
 
-        now = datetime.now(timezone.utc)
+    result = connection.scalars(
+        customers_table.insert().returning(customers_table.c.customer_id),
+        customer_rows,
+    ).all()
 
-        connection.execute(
-            text(
-                """
-                INSERT INTO customers (
-                    first_name,
-                    last_name,
-                    email,
-                    phone,
-                    created_at,
-                    updated_at
-                )
-                VALUES (
-                    :first_name,
-                    :last_name,
-                    :email,
-                    :phone,
-                    :created_at,
-                    :updated_at
-                )
-                """
-            ),
-            {
-                "first_name": fake.first_name(),
-                "last_name": fake.last_name(),
-                "email": f"customer_{uuid.uuid4().hex}@example.com",
-                "phone": fake.phone_number(),
-                "created_at": now,
-                "updated_at": now,
-            },
-        )
-
-        inserted += 1
-
-    return inserted
+    return list(result)
 
 
-# UPDATE CUSTOMERS
-
-
-def update_customers(
-    connection,
-    count: int,
-) -> int:
+def update_customers_profile(connection, count: int) -> int:
     """
-    Simulate existing customers changing their information.
+    Simulate existing customers updating contact numbers or moving cities.
     """
-
     customer_ids = connection.execute(
-        text(
-            """
-            SELECT customer_id
-            FROM customers
-            ORDER BY RANDOM()
-            LIMIT :limit
-            """
-        ),
-        {
-            "limit": count,
-        },
+        text("SELECT customer_id FROM customers ORDER BY RANDOM() LIMIT :limit"),
+        {"limit": count},
     ).scalars().all()
 
+    now = datetime.now(UTC)
     updated = 0
 
     for customer_id in customer_ids:
-
-        now = datetime.now(timezone.utc)
-
+        new_cust = generate_indian_customer()
         result = connection.execute(
-            text(
-                """
+            text("""
                 UPDATE customers
-                SET
-                    phone = :phone,
-                    updated_at = :updated_at
+                SET phone = :phone,
+                    city = :city,
+                    state = :state,
+                    updated_at = :now
                 WHERE customer_id = :customer_id
-                """
-            ),
+            """),
             {
-                "phone": fake.phone_number(),
-                "updated_at": now,
+                "phone": new_cust["phone"],
+                "city": new_cust["city"],
+                "state": new_cust["state"],
+                "now": now,
                 "customer_id": customer_id,
             },
         )
-
         updated += result.rowcount
 
     return updated
 
 
-# CUSTOMERS
+# ---------------------------------------------------------------------------
+# ORDER & PAYMENT OPERATIONS (BATCH HIGH-PERFORMANCE)
+# ---------------------------------------------------------------------------
 
-
-def get_customer_ids(connection) -> list[int]:
-
-    return list(
-        connection.execute(
-            text(
-                """
-                SELECT customer_id
-                FROM customers
-                ORDER BY customer_id
-                """
-            )
-        ).scalars().all()
-    )
-
-
-# PRODUCTS
-
-
-def get_products(connection) -> list[dict]:
-    """
-    Load the REAL product catalog.
-
-    The generator never invents a product price.
-    """
-
-    rows = connection.execute(
-        text(
-            """
-            SELECT
-                product_id,
-                price
-            FROM products
-            WHERE price > 0
-            ORDER BY product_id
-            """
-        )
-    ).mappings().all()
-
-    return [
-        {
-            "product_id": row["product_id"],
-            "price": money(row["price"]),
-        }
-        for row in rows
-    ]
-
-
-# SELECT PRODUCTS FOR ORDER
-
-
-def select_products_for_order(
-    products: list[dict],
-) -> list[dict]:
-    """
-    Select multiple REAL products for an order.
-    """
-
-    if not products:
-        raise RuntimeError(
-            "Cannot create order because product catalog is empty."
-        )
-
-    product_count = random.randint(
-        MIN_PRODUCTS_PER_ORDER,
-        min(
-            MAX_PRODUCTS_PER_ORDER,
-            len(products),
-        ),
-    )
-
-    selected_products = random.sample(
-        products,
-        product_count,
-    )
-
-    order_items = []
-
-    for product in selected_products:
-
-        quantity = random.randint(
-            MIN_QUANTITY,
-            MAX_QUANTITY,
-        )
-
-        order_items.append(
-            {
-                "product_id": product["product_id"],
-                "quantity": quantity,
-                "unit_price": product["price"],
-            }
-        )
-
-    return order_items
-
-
-# CREATE ORDER
-
-
-def create_order(
+def generate_orders_and_payments(
     connection,
-    customer_id: int,
-    order_items: list[dict],
+    order_count: int,
+    existing_customer_ids: list[int],
+    new_customer_ids: list[int],
+    store_ids: list[int],
+    products: list[dict],
+    payment_methods: list[dict],
 ) -> dict:
     """
-    Create a realistic order.
-
-    The final amount is calculated from actual order items.
+    Generate realistic orders, items, and linked payments in ultra-fast bulk operations.
     """
+    if not products:
+        raise RuntimeError("Product catalog is empty. Cannot generate orders.")
+    if not store_ids:
+        raise RuntimeError("No stores found in database.")
+    if not payment_methods:
+        raise RuntimeError("No payment methods found in database.")
 
-    now = datetime.now(timezone.utc)
+    # Prepare payment method lookup & weights (Flipkart payment method distribution)
+    # UPI (~55%), Credit Card (~18%), Debit Card (~12%), COD (~10%), Net Banking (~5%)
+    method_weights = []
+    for pm in payment_methods:
+        name = pm["method_name"]
+        if "UPI" in name:
+            method_weights.append(55)
+        elif "Credit" in name:
+            method_weights.append(18)
+        elif "Debit" in name:
+            method_weights.append(12)
+        elif "Cash" in name:
+            method_weights.append(10)
+        else:
+            method_weights.append(5)
 
-    # --------------------------------------------------------
-    # Create empty order
-    # --------------------------------------------------------
+    now = datetime.now(UTC)
 
-    result = connection.execute(
-        text(
-            """
-            INSERT INTO orders (
-                customer_id,
-                order_status,
-                total_amount,
-                created_at,
-                updated_at
-            )
-            VALUES (
-                :customer_id,
-                :order_status,
-                0,
-                :created_at,
-                :updated_at
-            )
-            RETURNING order_id
-            """
-        ),
-        {
-            "customer_id": customer_id,
-            "order_status": random.choice(
-                [
-                    "PENDING",
-                    "PLACED",
-                    "CONFIRMED",
-                    "SHIPPED",
-                    "DELIVERED",
-                    "CANCELLED",
-                ]
-            ),
-            "created_at": now,
-            "updated_at": now,
-        },
-    )
+    # 1. Build all order definitions in memory
+    order_insert_rows = []
+    pre_order_items = []
+    pre_payments = []
 
-    order_id = result.scalar_one()
+    stock_decrements: dict[int, int] = {}
+    successful_payments = 0
+    failed_payments = 0
+    pending_payments = 0
 
-    # --------------------------------------------------------
-    # Create order items
-    # --------------------------------------------------------
+    for _ in range(order_count):
+        # 30% chance for newly registered user, 70% returning customer
+        if new_customer_ids and random.random() < 0.30:
+            customer_id = random.choice(new_customer_ids)
+        else:
+            customer_id = random.choice(existing_customer_ids)
 
-    subtotal = Decimal("0.00")
+        store_id = random.choice(store_ids)
 
-    for item in order_items:
+        # Initial order status distribution
+        status_rand = random.random()
+        if status_rand < 0.65:
+            initial_status = "PLACED"
+        elif status_rand < 0.90:
+            initial_status = "CONFIRMED"
+        else:
+            initial_status = "CANCELLED"
 
-        quantity = item["quantity"]
+        # Select 1 to 4 distinct products
+        item_count = random.choices([1, 2, 3, 4], weights=[60, 25, 10, 5], k=1)[0]
+        selected_prods = random.sample(products, min(item_count, len(products)))
 
-        unit_price = money(
-            item["unit_price"]
-        )
+        subtotal = Decimal("0.00")
+        items_for_this_order = []
 
-        line_total = money(
-            unit_price * quantity
-        )
+        for p in selected_prods:
+            qty = random.choices([1, 2, 3], weights=[80, 15, 5], k=1)[0]
+            unit_price = p["price"]
+            subtotal += unit_price * qty
 
-        connection.execute(
-            text(
-                """
-                INSERT INTO order_items (
-                    order_id,
-                    product_id,
-                    quantity,
-                    unit_price,
-                    created_at,
-                    updated_at
-                )
-                VALUES (
-                    :order_id,
-                    :product_id,
-                    :quantity,
-                    :unit_price,
-                    :created_at,
-                    :updated_at
-                )
-                """
-            ),
-            {
-                "order_id": order_id,
-                "product_id": item["product_id"],
-                "quantity": quantity,
+            items_for_this_order.append({
+                "product_id": p["product_id"],
+                "quantity": qty,
                 "unit_price": unit_price,
                 "created_at": now,
                 "updated_at": now,
-            },
-        )
+            })
+            stock_decrements[p["product_id"]] = stock_decrements.get(p["product_id"], 0) + qty
 
-        subtotal += line_total
+        # Discount
+        discount = Decimal("0.00")
+        if random.random() < ORDER_DISCOUNT_PROBABILITY:
+            discount_pct = random.choice([Decimal("0.05"), Decimal("0.10"), Decimal("0.15")])
+            discount = money(subtotal * discount_pct)
 
-    # --------------------------------------------------------
-    # Discount
-    # --------------------------------------------------------
+        # Indian GST Tax
+        taxable_amount = max(Decimal("0.00"), subtotal - discount)
+        tax = money(taxable_amount * TAX_RATE)
 
-    discount = Decimal("0.00")
+        # Flipkart Plus Free Delivery vs Standard Shipping
+        if taxable_amount >= FREE_SHIPPING_THRESHOLD:
+            shipping = Decimal("0.00")
+        else:
+            shipping = STANDARD_SHIPPING_FEE
 
-    if random.random() < ORDER_DISCOUNT_PROBABILITY:
+        order_total = money(taxable_amount + tax + shipping)
 
-        discount_percentage = random.choice(
-            [
-                Decimal("0.05"),
-                Decimal("0.10"),
-                Decimal("0.15"),
-                Decimal("0.20"),
-            ]
-        )
+        # Payment determination
+        selected_method = random.choices(payment_methods, weights=method_weights, k=1)[0]
+        method_name = selected_method["method_name"]
 
-        discount = money(
-            subtotal * discount_percentage
-        )
+        if initial_status == "CANCELLED":
+            payment_status = "FAILED"
+            paid_at = None
+            failed_payments += 1
+        elif method_name == "Cash on Delivery":
+            payment_status = "PENDING"
+            paid_at = None
+            pending_payments += 1
+        else:
+            # 93% success rate for online payments
+            if random.random() < 0.93:
+                payment_status = "SUCCESS"
+                paid_at = now
+                successful_payments += 1
+            else:
+                payment_status = "FAILED"
+                paid_at = None
+                initial_status = "CANCELLED"  # Order cancelled due to failed payment
+                failed_payments += 1
 
-    # --------------------------------------------------------
-    # Tax
-    # --------------------------------------------------------
+        order_insert_rows.append({
+            "customer_id": customer_id,
+            "store_id": store_id,
+            "order_status": initial_status,
+            "order_date": now,
+            "total_amount": order_total,
+            "created_at": now,
+            "updated_at": now,
+        })
 
-    taxable_amount = subtotal - discount
+        pre_order_items.append(items_for_this_order)
+        pre_payments.append({
+            "payment_method_id": selected_method["payment_method_id"],
+            "method_name": method_name,
+            "payment_status": payment_status,
+            "amount": order_total,
+            "paid_at": paid_at,
+            "created_at": now,
+            "updated_at": now,
+        })
 
-    tax_rate = Decimal("0.18")
+    # 2. Bulk insert all orders and fetch generated order_ids
+    order_ids = connection.scalars(
+        orders_table.insert().returning(orders_table.c.order_id),
+        order_insert_rows,
+    ).all()
 
-    tax = money(
-        taxable_amount * tax_rate
-    )
+    # 3. Associate returned order_id with order items and payments
+    all_order_items = []
+    all_payments = []
 
-    # --------------------------------------------------------
-    # Shipping
-    # --------------------------------------------------------
+    for order_id, items, payment in zip(order_ids, pre_order_items, pre_payments):
+        for item in items:
+            item["order_id"] = order_id
+            all_order_items.append(item)
 
-    if taxable_amount >= Decimal("1000"):
-        shipping = Decimal("0.00")
-    else:
-        shipping = Decimal("99.00")
-
-    # --------------------------------------------------------
-    # Final order total
-    # --------------------------------------------------------
-
-    total = money(
-        taxable_amount
-        + tax
-        + shipping
-    )
-
-    # --------------------------------------------------------
-    # Update order
-    # --------------------------------------------------------
-
-    connection.execute(
-        text(
-            """
-            UPDATE orders
-            SET
-                total_amount = :total_amount,
-                updated_at = :updated_at
-            WHERE order_id = :order_id
-            """
-        ),
-        {
-            "total_amount": total,
-            "updated_at": datetime.now(timezone.utc),
+        payment_ref = generate_payment_reference(payment["method_name"], order_id)
+        all_payments.append({
             "order_id": order_id,
-        },
-    )
+            "payment_method_id": payment["payment_method_id"],
+            "payment_status": payment["payment_status"],
+            "amount": payment["amount"],
+            "transaction_reference": payment_ref,
+            "paid_at": payment["paid_at"],
+            "created_at": payment["created_at"],
+            "updated_at": payment["updated_at"],
+        })
+
+    # 4. Bulk insert order items and payments
+    connection.execute(order_items_table.insert(), all_order_items)
+    connection.execute(payments_table.insert(), all_payments)
+
+    # 5. Decrement inventory stock
+    for prod_id, qty_bought in stock_decrements.items():
+        connection.execute(
+            text("""
+                UPDATE products
+                SET stock_quantity = GREATEST(0, stock_quantity - :qty),
+                    updated_at = :now
+                WHERE product_id = :id
+            """),
+            {"qty": qty_bought, "now": now, "id": prod_id},
+        )
 
     return {
-        "order_id": order_id,
-        "subtotal": subtotal,
-        "discount": discount,
-        "tax": tax,
-        "shipping": shipping,
-        "total": total,
-        "item_count": len(order_items),
+        "orders_inserted": len(order_ids),
+        "order_items_inserted": len(all_order_items),
+        "payments_inserted": len(all_payments),
+        "successful_payments": successful_payments,
+        "failed_payments": failed_payments,
+        "pending_payments": pending_payments,
     }
 
 
-# PAYMENT METHOD
-
-
-def get_payment_method_id(connection):
-
-    return connection.execute(
-        text(
-            """
-            SELECT payment_method_id
-            FROM payment_methods
-            ORDER BY RANDOM()
-            LIMIT 1
-            """
-        )
-    ).scalar_one_or_none()
-
-
-# CREATE PAYMENT
-
-
-def create_payment(
-    connection,
-    order_id: int,
-    amount: Decimal,
-) -> str:
+def update_orders_lifecycle(connection, count: int) -> int:
     """
-    Create a payment using the ACTUAL order total.
+    Progress existing active orders through real-world e-commerce states:
+    PLACED -> CONFIRMED -> SHIPPED -> DELIVERED (or CANCELLED).
+    Also updates linked payments (e.g. COD PENDING becomes SUCCESS on delivery).
     """
-
-    payment_method_id = get_payment_method_id(
-        connection
-    )
-
-    if payment_method_id is None:
-        raise RuntimeError(
-            "No payment methods exist."
-        )
-
-    payment_succeeded = (
-        random.random()
-        < PAYMENT_SUCCESS_PROBABILITY
-    )
-
-    if payment_succeeded:
-
-        payment_status = "SUCCESS"
-        paid_at = datetime.now(timezone.utc)
-
-    else:
-
-        payment_status = "FAILED"
-        paid_at = None
-
-    connection.execute(
-        text(
-            """
-            INSERT INTO payments (
-                order_id,
-                payment_method_id,
-                payment_status,
-                amount,
-                transaction_reference,
-                paid_at
-            )
-            VALUES (
-                :order_id,
-                :payment_method_id,
-                :payment_status,
-                :amount,
-                :transaction_reference,
-                :paid_at
-            )
-            """
-        ),
-        {
-            "order_id": order_id,
-            "payment_method_id": payment_method_id,
-            "payment_status": payment_status,
-            "amount": amount,
-            "transaction_reference": str(
-                uuid.uuid4()
-            ),
-            "paid_at": paid_at,
-        },
-    )
-
-    return payment_status
-
-
-# ORDER STATUS TRANSITIONS
-
-ORDER_STATUS_TRANSITIONS = {
-    "PENDING": [
-        "CONFIRMED",
-        "CANCELLED",
-    ],
-
-    "CONFIRMED": [
-        "PROCESSING",
-        "CANCELLED",
-    ],
-
-    "PROCESSING": [
-        "SHIPPED",
-    ],
-
-    "SHIPPED": [
-        "DELIVERED",
-    ],
-}
-
-
-# UPDATE ORDERS
-
-
-def update_orders(
-    connection,
-    count: int,
-) -> int:
-    """
-    Simulate real order lifecycle changes.
-    """
-
-    orders = connection.execute(
-        text(
-            """
-            SELECT
-                order_id,
-                order_status
+    active_orders = connection.execute(
+        text("""
+            SELECT order_id, order_status
             FROM orders
-            WHERE order_status NOT IN (
-                'DELIVERED',
-                'CANCELLED'
-            )
+            WHERE order_status IN ('PLACED', 'CONFIRMED', 'SHIPPED')
             ORDER BY RANDOM()
             LIMIT :limit
-            """
-        ),
-        {
-            "limit": count,
-        },
+        """),
+        {"limit": count},
     ).mappings().all()
 
+    now = datetime.now(UTC)
     updated = 0
 
-    for order in orders:
+    for ord_row in active_orders:
+        order_id = ord_row["order_id"]
+        current_status = ord_row["order_status"]
+        next_choices = ORDER_STATUS_TRANSITIONS.get(current_status, [])
 
-        current_status = order["order_status"]
-
-        possible_statuses = (
-            ORDER_STATUS_TRANSITIONS.get(
-                current_status,
-                [],
-            )
-        )
-
-        if not possible_statuses:
+        if not next_choices:
             continue
 
-        new_status = random.choice(
-            possible_statuses
-        )
+        # Weigh positive delivery progression much higher than cancellation
+        if "CANCELLED" in next_choices:
+            new_status = random.choices(next_choices, weights=[88, 12], k=1)[0]
+        else:
+            new_status = random.choice(next_choices)
 
-        now = datetime.now(timezone.utc)
-
-        result = connection.execute(
-            text(
-                """
+        connection.execute(
+            text("""
                 UPDATE orders
-                SET
-                    order_status = :order_status,
-                    order_date = :order_date
+                SET order_status = :status,
+                    updated_at = :now
                 WHERE order_id = :order_id
-                """
-            ),
-            {
-                "order_status": new_status,
-                "order_date": now,
-                "order_id": order["order_id"],
-            },
+            """),
+            {"status": new_status, "now": now, "order_id": order_id},
         )
 
-        updated += result.rowcount
+        # Synchronize payment lifecycle
+        if new_status == "DELIVERED":
+            # For Cash on Delivery, mark payment as SUCCESS upon delivery
+            connection.execute(
+                text("""
+                    UPDATE payments
+                    SET payment_status = 'SUCCESS',
+                        paid_at = :now,
+                        updated_at = :now
+                    WHERE order_id = :order_id
+                      AND payment_status = 'PENDING'
+                """),
+                {"now": now, "order_id": order_id},
+            )
+        elif new_status == "CANCELLED":
+            # If payment was already SUCCESS, mark as REFUNDED
+            connection.execute(
+                text("""
+                    UPDATE payments
+                    SET payment_status = 'REFUNDED',
+                        updated_at = :now
+                    WHERE order_id = :order_id
+                      AND payment_status = 'SUCCESS'
+                """),
+                {"now": now, "order_id": order_id},
+            )
+
+        updated += 1
 
     return updated
 
 
-# MAIN
+# ---------------------------------------------------------------------------
+# CORE GENERATION RUNNER
+# ---------------------------------------------------------------------------
 
-
-def run_incremental_seed_generation() -> None:
+def run_incremental_seed_generation(batch_number: int = 1) -> dict:
     """
-    Generate one batch of realistic source-system activity.
-
-    This function knows NOTHING about Airflow.
-
-    Airflow will call this function.
+    Execute one complete batch of realistic Flipkart e-commerce events.
     """
-
-    logger.info(
-        "Incremental seed generation started"
-    )
+    start_time = time.time()
+    logger.info("=" * 65)
+    logger.info("FLIPKART EVENT SIMULATOR | BATCH #%d START", batch_number)
+    logger.info("=" * 65)
 
     with engine.begin() as connection:
+        # 1. NEW PRODUCTS
+        products_to_create = random.randint(NEW_PRODUCTS_MIN, NEW_PRODUCTS_MAX)
+        products_inserted = create_incremental_products(connection, products_to_create)
 
-        # 1. NEW CUSTOMERS
-        customer_count = random.randint(
-            NEW_CUSTOMERS_MIN,
-            NEW_CUSTOMERS_MAX,
-        )
+        # 2. PRODUCT UPDATES
+        products_to_update = random.randint(PRODUCT_UPDATES_MIN, PRODUCT_UPDATES_MAX)
+        products_updated = update_products_inventory(connection, products_to_update)
 
-        logger.info(
-            "\nGenerating new customers | requested=%d",
-            customer_count,
-        )
+        # 3. NEW CUSTOMER SIGNUPS
+        customers_to_create = random.randint(NEW_CUSTOMERS_MIN, NEW_CUSTOMERS_MAX)
+        new_customer_ids = create_incremental_customers(connection, customers_to_create)
 
-        customers_inserted = create_customers(
-            connection,
-            customer_count,
-        )
+        # 4. CUSTOMER PROFILE UPDATES
+        cust_updates_count = random.randint(CUSTOMER_UPDATES_MIN, CUSTOMER_UPDATES_MAX)
+        customers_updated = update_customers_profile(connection, cust_updates_count)
 
-        logger.info(
-            "Customers inserted | count=%d",
-            customers_inserted,
-        )
+        # 5. FETCH EXISTING POOLS
+        all_customer_ids = connection.execute(
+            select(customers_table.c.customer_id)
+        ).scalars().all()
 
-        # 2. CUSTOMER UPDATES
-        customer_update_count = random.randint(
-            CUSTOMER_UPDATES_MIN,
-            CUSTOMER_UPDATES_MAX,
-        )
+        store_ids = connection.execute(
+            select(stores_table.c.store_id)
+        ).scalars().all()
 
-        logger.info(
-            "\nUpdating existing customers | requested=%d",
-            customer_update_count,
-        )
-
-        customers_updated = update_customers(
-            connection,
-            customer_update_count,
-        )
-
-        logger.info(
-            "Customers updated | count=%d",
-            customers_updated,
-        )
-
-        # 3. LOAD EXISTING CUSTOMERS
-        customer_ids = get_customer_ids(
-            connection
-        )
-
-        logger.info(
-            "\nLoaded existing customers | count=%d",
-            len(customer_ids),
-        )
-
-        if not customer_ids:
-            raise RuntimeError(
-                "No customers exist. "
-                "Seed customers before generating orders."
+        payment_methods = connection.execute(
+            select(
+                payment_methods_table.c.payment_method_id,
+                payment_methods_table.c.method_name,
             )
+        ).mappings().all()
 
-        # 4. LOAD ACTUAL PRODUCT CATALOG
-        products = get_products(
-            connection
-        )
-
-        logger.info(
-            "\nLoaded product catalog | count=%d",
-            len(products),
-        )
-
-        if not products:
-            raise RuntimeError(
-                "No products exist. "
-                "Seed products before generating orders."
+        products = connection.execute(
+            select(
+                products_table.c.product_id,
+                products_table.c.price,
+            ).where(
+                products_table.c.is_active.is_(True),
+                products_table.c.stock_quantity > 0,
             )
+        ).mappings().all()
 
-        # 5. CREATE NEW ORDERS
-        order_count = random.randint(
-            NEW_ORDERS_MIN,
-            NEW_ORDERS_MAX,
+        # Format products with Decimal money
+        active_products = [
+            {"product_id": p["product_id"], "price": money(p["price"])}
+            for p in products
+        ]
+
+        # 6. GENERATE REALISTIC ORDERS & LINKED PAYMENTS (MINIMUM 1,000 ORDERS)
+        order_count = random.randint(NEW_ORDERS_MIN, NEW_ORDERS_MAX)
+        order_metrics = generate_orders_and_payments(
+            connection=connection,
+            order_count=order_count,
+            existing_customer_ids=all_customer_ids,
+            new_customer_ids=new_customer_ids,
+            store_ids=store_ids,
+            products=active_products,
+            payment_methods=payment_methods,
         )
 
-        logger.info(
-            "\nGenerating new orders | requested=%d",
-            order_count,
-        )
+        # 7. ORDER LIFECYCLE PROGRESSION (DELIVERIES & CANCELLATIONS)
+        order_update_count = random.randint(ORDER_UPDATES_MIN, ORDER_UPDATES_MAX)
+        orders_updated = update_orders_lifecycle(connection, order_update_count)
 
-        orders_inserted = 0
-        order_items_inserted = 0
+    elapsed = time.time() - start_time
 
-        successful_payments = 0
-        failed_payments = 0
+    # 8. PRINT RICH SUMMARY REPORT
+    logger.info("=" * 65)
+    logger.info("FLIPKART SIMULATION SUMMARY | BATCH #%d (%.2fs)", batch_number, elapsed)
+    logger.info("=" * 65)
+    logger.info("  New Products Added      : %d", products_inserted)
+    logger.info("  Products Updated        : %d", products_updated)
+    logger.info("  New Customers Signed Up : %d", len(new_customer_ids))
+    logger.info("  Customers Updated       : %d", customers_updated)
+    logger.info("  Orders Placed           : %d", order_metrics["orders_inserted"])
+    logger.info("  Order Items Purchased   : %d", order_metrics["order_items_inserted"])
+    logger.info("  Orders Updated/Delivered: %d", orders_updated)
+    logger.info("  Payments Created        : %d", order_metrics["payments_inserted"])
+    logger.info("    -> Successful (UPI/Card): %d", order_metrics["successful_payments"])
+    logger.info("    -> Pending (Cash on Del): %d", order_metrics["pending_payments"])
+    logger.info("    -> Failed / Declined    : %d", order_metrics["failed_payments"])
+    logger.info("=" * 65)
 
-        generated_orders = []
+    return {
+        "batch_number": batch_number,
+        "elapsed_seconds": round(elapsed, 2),
+        "products_inserted": products_inserted,
+        "customers_inserted": len(new_customer_ids),
+        "orders_inserted": order_metrics["orders_inserted"],
+        "order_items_inserted": order_metrics["order_items_inserted"],
+        "payments_inserted": order_metrics["payments_inserted"],
+        "orders_updated": orders_updated,
+    }
 
-        for _ in range(order_count):
 
-            # Select existing customer
-            customer_id = random.choice(
-                customer_ids
-            )
+def continuous_generation_loop(interval_seconds: int = 60) -> None:
+    """
+    Continuously emit Flipkart e-commerce event batches at regular intervals (e.g. every minute).
+    """
+    logger.info("Starting Continuous Flipkart Event Generator")
+    logger.info("Interval: %d seconds | Press Ctrl+C to terminate cleanly", interval_seconds)
 
-            # Select actual products
-            order_items = select_products_for_order(
-                products
-            )
+    batch = 1
+    try:
+        while True:
+            run_incremental_seed_generation(batch_number=batch)
+            logger.info("Batch #%d completed. Sleeping for %d seconds...", batch, interval_seconds)
+            time.sleep(interval_seconds)
+            batch += 1
+    except KeyboardInterrupt:
+        logger.info("\nGenerator terminated gracefully by user.")
+        sys.exit(0)
 
-            # Create order
-            order = create_order(
-                connection,
-                customer_id,
-                order_items,
-            )
 
-            orders_inserted += 1
+# ---------------------------------------------------------------------------
+# CLI ENTRY POINT
+# ---------------------------------------------------------------------------
 
-            order_items_inserted += len(
-                order_items
-            )
-
-            generated_orders.append(order)
-
-            # Create payment
-            payment_status = create_payment(
-                connection,
-                order["order_id"],
-                order["total"],
-            )
-
-            if payment_status == "SUCCESS":
-                successful_payments += 1
-            else:
-                failed_payments += 1
-
-        logger.info(
-            "Orders generated | orders=%d | order_items=%d",
-            orders_inserted,
-            order_items_inserted,
-        )
-
-        logger.info(
-            "Payments generated | successful=%d | failed=%d",
-            successful_payments,
-            failed_payments,
-        )
-
-        # 6. UPDATE EXISTING ORDERS
-        order_update_count = random.randint(
-            ORDER_UPDATES_MIN,
-            ORDER_UPDATES_MAX,
-        )
-
-        logger.info(
-            "\nUpdating existing orders | requested=%d",
-            order_update_count,
-        )
-
-        orders_updated = update_orders(
-            connection,
-            order_update_count,
-        )
-
-        logger.info(
-            "Orders updated | count=%d",
-            orders_updated,
-        )
-
-        # 7. SUMMARY
-        logger.info("\n")
-        logger.info("=" * 60)
-        logger.info("ECOMMERCE INCREMENTAL SEED SUMMARY")
-        logger.info("=" * 60)
-
-        logger.info(
-            "Customers inserted   : %d",
-            customers_inserted,
-        )
-
-        logger.info(
-            "Customers updated    : %d",
-            customers_updated,
-        )
-
-        logger.info(
-            "Orders inserted      : %d",
-            orders_inserted,
-        )
-
-        logger.info(
-            "Orders updated       : %d",
-            orders_updated,
-        )
-
-        logger.info(
-            "Order items inserted : %d",
-            order_items_inserted,
-        )
-
-        logger.info(
-            "Payments successful  : %d",
-            successful_payments,
-        )
-
-        logger.info(
-            "Payments failed      : %d",
-            failed_payments,
-        )
-
-        logger.info("=" * 60)
-
-        # 8. SAMPLE ORDERS
-        logger.info(
-            "\nGenerated order samples | count=%d",
-            min(5, len(generated_orders)),
-        )
-
-        for order in generated_orders[:5]:
-
-            logger.info(
-                "Order generated | "
-                "order_id=%s | "
-                "items=%d | "
-                "subtotal=%s | "
-                "discount=%s | "
-                "tax=%s | "
-                "shipping=%s | "
-                "total=%s",
-                order["order_id"],
-                order["item_count"],
-                order["subtotal"],
-                order["discount"],
-                order["tax"],
-                order["shipping"],
-                order["total"],
-            )
-
-    logger.info(
-        "\nIncremental seed generation completed successfully"
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Flipkart E-Commerce Live Activity Data Generator"
+    )
+    parser.add_argument(
+        "--continuous", "-c",
+        action="store_true",
+        help="Run continuously in a loop every minute",
+    )
+    parser.add_argument(
+        "--interval", "-i",
+        type=int,
+        default=int(os.getenv("CONTINUOUS_INTERVAL_SECONDS", "60")),
+        help="Interval between batches in seconds (default: 60)",
     )
 
+    args = parser.parse_args()
 
-# ENTRY POINT
+    # Also honor CONTINUOUS_MODE env var if set
+    env_continuous = os.getenv("CONTINUOUS_MODE", "").lower() in ("true", "1", "yes")
+    is_continuous = args.continuous or env_continuous
+
+    if is_continuous:
+        continuous_generation_loop(interval_seconds=args.interval)
+    else:
+        run_incremental_seed_generation(batch_number=1)
+
+
 if __name__ == "__main__":
-    run_incremental_seed_generation()
+    main()

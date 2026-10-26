@@ -1,5 +1,6 @@
-services:
+version: '3.8'
 
+services:
   postgres:
     image: postgres:16
     container_name: ecom-postgres
@@ -20,9 +21,8 @@ services:
     networks:
       - ecom-lakehouse-network
 
-
   minio:
-    image: minio/minio:latest
+    image: cgr.dev/chainguard/minio:latest
     container_name: ecom-minio
     command: server /data --console-address ":9001"
     environment:
@@ -37,11 +37,9 @@ services:
     networks:
       - ecom-lakehouse-network
 
-
 volumes:
   postgres-data:
   minio-data:
-
 
 networks:
   ecom-lakehouse-network:
