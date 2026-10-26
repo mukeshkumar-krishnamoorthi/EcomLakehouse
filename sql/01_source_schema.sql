@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS order_items (
     product_id BIGINT NOT NULL REFERENCES products(product_id),
     quantity INTEGER NOT NULL,
     unit_price NUMERIC(12,2) NOT NULL,
+    item_status VARCHAR(30) NOT NULL DEFAULT 'ORDERED',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -109,6 +110,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_store_id ON orders (store_id);
 CREATE INDEX IF NOT EXISTS idx_orders_order_date ON orders (order_date);
 CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items (order_id);
 CREATE INDEX IF NOT EXISTS idx_order_items_product_id ON order_items (product_id);
+CREATE INDEX IF NOT EXISTS idx_order_items_item_status ON order_items (item_status);
 CREATE INDEX IF NOT EXISTS idx_payments_order_id ON payments (order_id);
 CREATE INDEX IF NOT EXISTS idx_payments_payment_method_id ON payments (payment_method_id);
 CREATE INDEX IF NOT EXISTS idx_products_category_id ON products (category_id);

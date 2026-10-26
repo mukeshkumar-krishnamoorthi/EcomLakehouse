@@ -302,6 +302,12 @@ def seed_orders(connection, count=10000):
 
         order_id = order_result.scalar_one()
 
+        initial_item_status = (
+            "DELIVERED"
+            if order_status == "DELIVERED"
+            else ("CANCELLED" if order_status == "CANCELLED" else "ORDERED")
+        )
+
         for item in order_items:
             connection.execute(
                 text(
@@ -311,19 +317,22 @@ def seed_orders(connection, count=10000):
                             order_id,
                             product_id,
                             quantity,
-                            unit_price
+                            unit_price,
+                            item_status
                         )
                     VALUES
                         (
                             :order_id,
                             :product_id,
                             :quantity,
-                            :unit_price
+                            :unit_price,
+                            :item_status
                         )
                     """
                 ),
                 {
                     "order_id": order_id,
+                    "item_status": initial_item_status,
                     **item,
                 },
             )

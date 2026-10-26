@@ -77,6 +77,12 @@ CUSTOMER_UPDATES_MAX = int(os.getenv("CUSTOMER_UPDATES_MAX", "80"))
 ORDER_UPDATES_MIN = int(os.getenv("ORDER_UPDATES_MIN", "80"))
 ORDER_UPDATES_MAX = int(os.getenv("ORDER_UPDATES_MAX", "150"))
 
+PAYMENT_RETRIES_MIN = int(os.getenv("PAYMENT_RETRIES_MIN", "20"))
+PAYMENT_RETRIES_MAX = int(os.getenv("PAYMENT_RETRIES_MAX", "50"))
+
+ORDER_RETURNS_MIN = int(os.getenv("ORDER_RETURNS_MIN", "10"))
+ORDER_RETURNS_MAX = int(os.getenv("ORDER_RETURNS_MAX", "30"))
+
 PRODUCT_UPDATES_MIN = int(os.getenv("PRODUCT_UPDATES_MIN", "10"))
 PRODUCT_UPDATES_MAX = int(os.getenv("PRODUCT_UPDATES_MAX", "25"))
 
@@ -359,6 +365,7 @@ def generate_orders_and_payments(
                 "product_id": p["product_id"],
                 "quantity": qty,
                 "unit_price": unit_price,
+                "item_status": "ORDERED",
                 "created_at": now,
                 "updated_at": now,
             })
@@ -390,20 +397,23 @@ def generate_orders_and_payments(
             payment_status = "FAILED"
             paid_at = None
             failed_payments += 1
+            for itm in items_for_this_order:
+                itm["item_status"] = "CANCELLED"
         elif method_name == "Cash on Delivery":
             payment_status = "PENDING"
             paid_at = None
             pending_payments += 1
         else:
-            # 93% success rate for online payments
-            if random.random() < 0.93:
+            # 92% success rate for initial online payments
+            if random.random() < 0.92:
                 payment_status = "SUCCESS"
                 paid_at = now
                 successful_payments += 1
             else:
+                # Initial payment failed! Keep order PENDING so customer can retry
                 payment_status = "FAILED"
                 paid_at = None
-                initial_status = "CANCELLED"  # Order cancelled due to failed payment
+                initial_status = "PENDING"
                 failed_payments += 1
 
         order_insert_rows.append({
@@ -524,8 +534,19 @@ def update_orders_lifecycle(connection, count: int) -> int:
             {"status": new_status, "now": now, "order_id": order_id},
         )
 
-        # Synchronize payment lifecycle
+        # Synchronize order items and payment lifecycle
         if new_status == "DELIVERED":
+            # Mark all items as DELIVERED
+            connection.execute(
+                text("""
+                    UPDATE order_items
+                    SET item_status = 'DELIVERED',
+                        updated_at = :now
+                    WHERE order_id = :order_id
+                      AND item_status = 'ORDERED'
+                """),
+                {"now": now, "order_id": order_id},
+            )
             # For Cash on Delivery, mark payment as SUCCESS upon delivery
             connection.execute(
                 text("""
@@ -539,6 +560,16 @@ def update_orders_lifecycle(connection, count: int) -> int:
                 {"now": now, "order_id": order_id},
             )
         elif new_status == "CANCELLED":
+            # Mark items as CANCELLED
+            connection.execute(
+                text("""
+                    UPDATE order_items
+                    SET item_status = 'CANCELLED',
+                        updated_at = :now
+                    WHERE order_id = :order_id
+                """),
+                {"now": now, "order_id": order_id},
+            )
             # If payment was already SUCCESS, mark as REFUNDED
             connection.execute(
                 text("""
@@ -550,10 +581,422 @@ def update_orders_lifecycle(connection, count: int) -> int:
                 """),
                 {"now": now, "order_id": order_id},
             )
+            # Restock cancelled products back to inventory
+            cancelled_items = connection.execute(
+                text("SELECT product_id, quantity FROM order_items WHERE order_id = :order_id"),
+                {"order_id": order_id},
+            ).mappings().all()
+            for itm in cancelled_items:
+                connection.execute(
+                    text("""
+                        UPDATE products
+                        SET stock_quantity = stock_quantity + :qty,
+                            updated_at = :now
+                        WHERE product_id = :prod_id
+                    """),
+                    {"qty": itm["quantity"], "now": now, "prod_id": itm["product_id"]},
+                )
 
         updated += 1
 
     return updated
+
+
+# ---------------------------------------------------------------------------
+# PAYMENT RETRY SIMULATION (1:N PAYMENT ATTEMPTS)
+# ---------------------------------------------------------------------------
+
+def retry_pending_payments(
+    connection,
+    payment_methods: list[dict],
+    method_weights: list[int],
+    max_retries_to_process: int = 50,
+) -> dict:
+    """
+    Simulate real-world customer payment retry behaviors for pending orders.
+    Customers with a failed initial payment attempt have ~75% chance to retry:
+    - Can retry with same or different payment method (UPI, Card, NetBanking, COD)
+    - Successful retries confirm the order
+    - Failed retries either leave it pending or cancel after max attempts (3)
+    - ~25% abandon the order, causing it to cancel and restock inventory.
+    """
+    now = datetime.now(UTC)
+
+    pending_orders = connection.execute(
+        text("""
+            SELECT o.order_id, o.customer_id, o.total_amount,
+                   (
+                       SELECT COUNT(p.payment_id)
+                       FROM payments p
+                       WHERE p.order_id = o.order_id
+                   ) AS attempt_count
+            FROM orders o
+            WHERE o.order_status = 'PENDING'
+            ORDER BY RANDOM()
+            LIMIT :limit
+        """),
+        {"limit": max_retries_to_process},
+    ).mappings().all()
+
+    if not pending_orders:
+        return {"retried_success": 0, "retried_failed": 0, "abandoned": 0}
+
+    retried_success = 0
+    retried_failed = 0
+    abandoned = 0
+
+    for ord_row in pending_orders:
+        order_id = ord_row["order_id"]
+        total_amount = ord_row["total_amount"]
+        attempt_count = ord_row["attempt_count"]
+
+        # 75% chance customer retries, 25% customer abandons
+        if random.random() < 0.75 and attempt_count < 3:
+            selected_method = random.choices(payment_methods, weights=method_weights, k=1)[0]
+            method_name = selected_method["method_name"]
+            pm_id = selected_method["payment_method_id"]
+            payment_ref = generate_payment_reference(method_name, order_id)
+
+            if method_name == "Cash on Delivery":
+                # Customer switches to Cash on Delivery
+                connection.execute(
+                    payments_table.insert().values({
+                        "order_id": order_id,
+                        "payment_method_id": pm_id,
+                        "payment_status": "PENDING",
+                        "amount": total_amount,
+                        "transaction_reference": payment_ref,
+                        "paid_at": None,
+                        "created_at": now,
+                        "updated_at": now,
+                    })
+                )
+                connection.execute(
+                    text("""
+                        UPDATE orders
+                        SET order_status = 'PLACED',
+                            updated_at = :now
+                        WHERE order_id = :order_id
+                    """),
+                    {"now": now, "order_id": order_id},
+                )
+                retried_success += 1
+            else:
+                # 85% success rate on retry attempts
+                if random.random() < 0.85:
+                    connection.execute(
+                        payments_table.insert().values({
+                            "order_id": order_id,
+                            "payment_method_id": pm_id,
+                            "payment_status": "SUCCESS",
+                            "amount": total_amount,
+                            "transaction_reference": payment_ref,
+                            "paid_at": now,
+                            "created_at": now,
+                            "updated_at": now,
+                        })
+                    )
+                    connection.execute(
+                        text("""
+                            UPDATE orders
+                            SET order_status = 'CONFIRMED',
+                                updated_at = :now
+                            WHERE order_id = :order_id
+                        """),
+                        {"now": now, "order_id": order_id},
+                    )
+                    retried_success += 1
+                else:
+                    # Retry declined / failed again
+                    connection.execute(
+                        payments_table.insert().values({
+                            "order_id": order_id,
+                            "payment_method_id": pm_id,
+                            "payment_status": "FAILED",
+                            "amount": total_amount,
+                            "transaction_reference": payment_ref,
+                            "paid_at": None,
+                            "created_at": now,
+                            "updated_at": now,
+                        })
+                    )
+                    retried_failed += 1
+
+                    # Cancel after 3 failed attempts
+                    if attempt_count + 1 >= 3:
+                        connection.execute(
+                            text("""
+                                UPDATE orders
+                                SET order_status = 'CANCELLED',
+                                    updated_at = :now
+                                WHERE order_id = :order_id
+                            """),
+                            {"now": now, "order_id": order_id},
+                        )
+                        connection.execute(
+                            text("""
+                                UPDATE order_items
+                                SET item_status = 'CANCELLED',
+                                    updated_at = :now
+                                WHERE order_id = :order_id
+                            """),
+                            {"now": now, "order_id": order_id},
+                        )
+                        # Restock items
+                        items = connection.execute(
+                            text(
+                                "SELECT product_id, quantity FROM order_items "
+                                "WHERE order_id = :order_id"
+                            ),
+                            {"order_id": order_id},
+                        ).mappings().all()
+                        for itm in items:
+                            connection.execute(
+                                text("""
+                                    UPDATE products
+                                    SET stock_quantity = stock_quantity + :qty,
+                                        updated_at = :now
+                                    WHERE product_id = :prod_id
+                                """),
+                                {"qty": itm["quantity"], "now": now, "prod_id": itm["product_id"]},
+                            )
+        else:
+            # Customer abandons order
+            connection.execute(
+                text("""
+                    UPDATE orders
+                    SET order_status = 'CANCELLED',
+                        updated_at = :now
+                    WHERE order_id = :order_id
+                """),
+                {"now": now, "order_id": order_id},
+            )
+            connection.execute(
+                text("""
+                    UPDATE order_items
+                    SET item_status = 'CANCELLED',
+                        updated_at = :now
+                    WHERE order_id = :order_id
+                """),
+                {"now": now, "order_id": order_id},
+            )
+            # Restock items
+            items = connection.execute(
+                text(
+                    "SELECT product_id, quantity FROM order_items "
+                    "WHERE order_id = :order_id"
+                ),
+                {"order_id": order_id},
+            ).mappings().all()
+            for itm in items:
+                connection.execute(
+                    text("""
+                        UPDATE products
+                        SET stock_quantity = stock_quantity + :qty,
+                            updated_at = :now
+                        WHERE product_id = :prod_id
+                    """),
+                    {"qty": itm["quantity"], "now": now, "prod_id": itm["product_id"]},
+                )
+            abandoned += 1
+
+    return {
+        "retried_success": retried_success,
+        "retried_failed": retried_failed,
+        "abandoned": abandoned,
+    }
+
+
+# ---------------------------------------------------------------------------
+# PRODUCT RETURNS SIMULATION (PARTIAL & FULL RETURNS)
+# ---------------------------------------------------------------------------
+
+def process_product_returns(connection, return_count: int) -> dict:
+    """
+    Simulate real-world product returns on delivered orders:
+    - A customer who ordered multiple items can return 1 specific item (Partial Return)
+    - Or return the entire order (Full Return)
+    - Updates order_items.item_status = 'RETURNED'
+    - Updates orders.order_status = 'PARTIALLY_RETURNED' or 'RETURNED'
+    - Inserts a REFUNDED payment record for the refunded amount
+    - Restocks the returned product quantity back to inventory.
+    """
+    now = datetime.now(UTC)
+
+    delivered_orders = connection.execute(
+        text("""
+            SELECT o.order_id, o.customer_id, o.total_amount
+            FROM orders o
+            WHERE o.order_status = 'DELIVERED'
+              AND EXISTS (
+                  SELECT 1
+                  FROM order_items oi
+                  WHERE oi.order_id = o.order_id
+                    AND oi.item_status = 'DELIVERED'
+              )
+            ORDER BY RANDOM()
+            LIMIT :limit
+        """),
+        {"limit": return_count},
+    ).mappings().all()
+
+    if not delivered_orders:
+        return {
+            "partial_returns": 0,
+            "full_returns": 0,
+            "items_returned": 0,
+            "refund_amount_total": Decimal("0.00"),
+        }
+
+    partial_returns = 0
+    full_returns = 0
+    items_returned = 0
+    refund_amount_total = Decimal("0.00")
+
+    for ord_row in delivered_orders:
+        order_id = ord_row["order_id"]
+
+        items = connection.execute(
+            text("""
+                SELECT order_item_id, product_id, quantity, unit_price
+                FROM order_items
+                WHERE order_id = :order_id
+                  AND item_status = 'DELIVERED'
+            """),
+            {"order_id": order_id},
+        ).mappings().all()
+
+        if not items:
+            continue
+
+        # Look up original payment method if possible
+        last_pm_id = connection.execute(
+            text("""
+                SELECT payment_method_id
+                FROM payments
+                WHERE order_id = :order_id
+                ORDER BY payment_id DESC
+                LIMIT 1
+            """),
+            {"order_id": order_id},
+        ).scalar() or 1
+
+        if len(items) > 1 and random.random() < 0.70:
+            # PARTIAL RETURN: Customer returns exactly ONE product from their multi-item order
+            item_to_return = random.choice(items)
+            returned_qty = item_to_return["quantity"]
+            item_refund = money(item_to_return["unit_price"] * returned_qty)
+
+            # 1. Update only that specific item to RETURNED
+            connection.execute(
+                text("""
+                    UPDATE order_items
+                    SET item_status = 'RETURNED',
+                        updated_at = :now
+                    WHERE order_item_id = :item_id
+                """),
+                {"item_id": item_to_return["order_item_id"], "now": now},
+            )
+
+            # 2. Update order status to PARTIALLY_RETURNED
+            connection.execute(
+                text("""
+                    UPDATE orders
+                    SET order_status = 'PARTIALLY_RETURNED',
+                        updated_at = :now
+                    WHERE order_id = :order_id
+                """),
+                {"order_id": order_id, "now": now},
+            )
+
+            # 3. Insert partial refund payment record
+            ref_code = f"REF-PART-{order_id}-{random.randint(1000, 9999)}"
+            connection.execute(
+                payments_table.insert().values({
+                    "order_id": order_id,
+                    "payment_method_id": last_pm_id,
+                    "payment_status": "REFUNDED",
+                    "amount": item_refund,
+                    "transaction_reference": ref_code,
+                    "paid_at": now,
+                    "created_at": now,
+                    "updated_at": now,
+                })
+            )
+
+            # 4. Restock the returned product inventory
+            connection.execute(
+                text("""
+                    UPDATE products
+                    SET stock_quantity = stock_quantity + :qty,
+                        updated_at = :now
+                    WHERE product_id = :prod_id
+                """),
+                {"qty": returned_qty, "now": now, "prod_id": item_to_return["product_id"]},
+            )
+
+            partial_returns += 1
+            items_returned += 1
+            refund_amount_total += item_refund
+
+        else:
+            # FULL RETURN: Customer returns ALL items in the order
+            total_refund = Decimal("0.00")
+            for itm in items:
+                connection.execute(
+                    text("""
+                        UPDATE order_items
+                        SET item_status = 'RETURNED',
+                            updated_at = :now
+                        WHERE order_item_id = :item_id
+                    """),
+                    {"item_id": itm["order_item_id"], "now": now},
+                )
+                connection.execute(
+                    text("""
+                        UPDATE products
+                        SET stock_quantity = stock_quantity + :qty,
+                            updated_at = :now
+                        WHERE product_id = :prod_id
+                    """),
+                    {"qty": itm["quantity"], "now": now, "prod_id": itm["product_id"]},
+                )
+                total_refund += money(itm["unit_price"] * itm["quantity"])
+                items_returned += 1
+
+            connection.execute(
+                text("""
+                    UPDATE orders
+                    SET order_status = 'RETURNED',
+                        updated_at = :now
+                    WHERE order_id = :order_id
+                """),
+                {"order_id": order_id, "now": now},
+            )
+
+            ref_code = f"REF-FULL-{order_id}-{random.randint(1000, 9999)}"
+            connection.execute(
+                payments_table.insert().values({
+                    "order_id": order_id,
+                    "payment_method_id": last_pm_id,
+                    "payment_status": "REFUNDED",
+                    "amount": total_refund,
+                    "transaction_reference": ref_code,
+                    "paid_at": now,
+                    "created_at": now,
+                    "updated_at": now,
+                })
+            )
+
+            full_returns += 1
+            refund_amount_total += total_refund
+
+    return {
+        "partial_returns": partial_returns,
+        "full_returns": full_returns,
+        "items_returned": items_returned,
+        "refund_amount_total": refund_amount_total,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -630,13 +1073,40 @@ def run_incremental_seed_generation(batch_number: int = 1) -> dict:
             payment_methods=payment_methods,
         )
 
-        # 7. ORDER LIFECYCLE PROGRESSION (DELIVERIES & CANCELLATIONS)
+        # 7. PAYMENT RETRIES (SIMULATE CUSTOMERS RETRYING FAILED PAYMENTS)
+        method_weights = []
+        for pm in payment_methods:
+            name = pm["method_name"]
+            if "UPI" in name:
+                method_weights.append(55)
+            elif "Credit" in name:
+                method_weights.append(18)
+            elif "Debit" in name:
+                method_weights.append(12)
+            elif "Cash" in name:
+                method_weights.append(10)
+            else:
+                method_weights.append(5)
+
+        retries_to_process = random.randint(PAYMENT_RETRIES_MIN, PAYMENT_RETRIES_MAX)
+        retry_metrics = retry_pending_payments(
+            connection=connection,
+            payment_methods=payment_methods,
+            method_weights=method_weights,
+            max_retries_to_process=retries_to_process,
+        )
+
+        # 8. ORDER LIFECYCLE PROGRESSION (DELIVERIES & CANCELLATIONS)
         order_update_count = random.randint(ORDER_UPDATES_MIN, ORDER_UPDATES_MAX)
         orders_updated = update_orders_lifecycle(connection, order_update_count)
 
+        # 9. PRODUCT RETURNS (PARTIAL & FULL RETURNS ON DELIVERED ORDERS)
+        returns_to_process = random.randint(ORDER_RETURNS_MIN, ORDER_RETURNS_MAX)
+        return_metrics = process_product_returns(connection, returns_to_process)
+
     elapsed = time.time() - start_time
 
-    # 8. PRINT RICH SUMMARY REPORT
+    # 10. PRINT RICH SUMMARY REPORT
     logger.info("=" * 65)
     logger.info("FLIPKART SIMULATION SUMMARY | BATCH #%d (%.2fs)", batch_number, elapsed)
     logger.info("=" * 65)
@@ -651,6 +1121,18 @@ def run_incremental_seed_generation(batch_number: int = 1) -> dict:
     logger.info("    -> Successful (UPI/Card): %d", order_metrics["successful_payments"])
     logger.info("    -> Pending (Cash on Del): %d", order_metrics["pending_payments"])
     logger.info("    -> Failed / Declined    : %d", order_metrics["failed_payments"])
+    logger.info("  Payment Retries (1:N)   : %d retried (%d success, %d failed, %d abandoned)",
+                retry_metrics["retried_success"] + retry_metrics["retried_failed"],
+                retry_metrics["retried_success"],
+                retry_metrics["retried_failed"],
+                retry_metrics["abandoned"])
+    logger.info(
+        "  Product Returns (1:N)   : %d partial, %d full (%d items returned, ₹%.2f refunded)",
+        return_metrics["partial_returns"],
+        return_metrics["full_returns"],
+        return_metrics["items_returned"],
+        return_metrics["refund_amount_total"],
+    )
     logger.info("=" * 65)
 
     return {
@@ -662,6 +1144,8 @@ def run_incremental_seed_generation(batch_number: int = 1) -> dict:
         "order_items_inserted": order_metrics["order_items_inserted"],
         "payments_inserted": order_metrics["payments_inserted"],
         "orders_updated": orders_updated,
+        "retry_metrics": retry_metrics,
+        "return_metrics": return_metrics,
     }
 
 

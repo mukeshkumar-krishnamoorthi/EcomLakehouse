@@ -167,6 +167,7 @@ erDiagram
         bigint product_id FK
         integer quantity
         numeric unit_price
+        varchar item_status
         timestamp created_at
         timestamp updated_at
     }
