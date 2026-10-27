@@ -1,7 +1,6 @@
+import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
-
-import pandas as pd
 
 
 def extract_table(
@@ -35,7 +34,7 @@ def extract_incremental(
         query,
         engine,
         params={
-            "start_time": start_time,
-            "end_time": end_time,
+            "start_time": str(start_time),
+            "end_time": str(end_time),
         },
     )
