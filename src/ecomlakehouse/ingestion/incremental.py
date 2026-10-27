@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+import pendulum
 from pendulum import parse
 from sqlalchemy.engine import Engine
 
@@ -49,56 +50,36 @@ def run_incremental_ingestion(
         data_interval_end,
     )
 
-    is_valid_end = (
-        data_interval_end is not None
-        and str(data_interval_end).strip().lower() not in ("none", "", "null")
-    )
-    if is_valid_end:
-        data_interval_end = (
-            parse(str(data_interval_end))
-            if isinstance(data_interval_end, str)
-            else data_interval_end
-        )
-    else:
-        import pendulum
+    def to_datetime(val):
+        if val is None or str(val).strip().lower() in ("none", "", "null"):
+            return None
+        try:
+            return parse(str(val))
+        except Exception:
+            return None
+
+    data_interval_end = to_datetime(data_interval_end)
+    if not data_interval_end:
+
         data_interval_end = pendulum.now("UTC")
 
-    # Check if a previous successful interval actually exists
-    is_valid_prev = (
-        previous_success_end is not None
-        and str(previous_success_end).strip().lower() not in ("none", "", "null")
-    )
-
-    if is_valid_prev:
+    prev_end = to_datetime(previous_success_end)
+    if prev_end:
         logger.info(
             "Previous successful interval found: %s -> %s",
             previous_success_start,
-            previous_success_end,
+            prev_end,
         )
-
-        previous_success_end = (
-            parse(str(previous_success_end))
-            if isinstance(previous_success_end, str)
-            else previous_success_end
-        )
-
+        previous_success_end = prev_end
     else:
-        is_valid_start = (
-            data_interval_start is not None
-            and str(data_interval_start).strip().lower() not in ("none", "", "null")
-        )
-        if is_valid_start:
+        start_dt = to_datetime(data_interval_start)
+        if start_dt:
             logger.info(
                 "No previous successful run found. "
                 "Using current interval start as extraction start: %s",
-                data_interval_start,
+                start_dt,
             )
-
-            previous_success_end = (
-                parse(str(data_interval_start))
-                if isinstance(data_interval_start, str)
-                else data_interval_start
-            )
+            previous_success_end = start_dt
         else:
             logger.info(
                 "No previous run or interval start found. Defaulting to 30 mins prior to end."
