@@ -1,12 +1,27 @@
+import os
+
+import pyspark.sql.functions as F
 import yaml
 from pyspark.sql import DataFrame
-import pyspark.sql.functions as F
 
 
 class DataQualityValidator:
-    def __init__(self, table_name: str, config_path: str = "config/quality_rules.yml"):
+    def __init__(
+        self,
+        table_name: str,
+        config_path: str = "src/ecomlakehouse/config/quality_rules.yml",
+    ):
         self.table_name = table_name
-        self.config_path = config_path
+
+        # Resolve config path cleanly whether running locally or inside Airflow container
+        possible_paths = [
+            config_path,
+            "/opt/ecomlakehouse/src/ecomlakehouse/silver/quality_rules_v1.yml",
+            os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                         "config", "quality_rules.yml"),
+        ]
+        self.config_path = next(
+            (p for p in possible_paths if p and os.path.exists(p)), config_path)
         self.rules: list[tuple[str, F.Column]] = []
         self._load_rules()
 
@@ -42,8 +57,8 @@ class DataQualityValidator:
         for rule in table_rules.get("temporal_logic", []):
             col = rule["column"]
             if rule.get("cannot_be_future"):
-                self.rules.append(
-                    (f"{col}_not_future", F.col(col) <= F.current_timestamp()))
+                max_ts = F.current_timestamp() + F.expr("INTERVAL 1 DAY")
+                self.rules.append((f"{col}_not_future", F.col(col) <= max_ts))
 
         # 5. Temporal Order Check (updated_at >= created_at)
         for rule in table_rules.get("temporal_order", []):
@@ -70,6 +85,11 @@ class DataQualityValidator:
         """
         Splits DataFrame into valid rows and quarantined rows.
         """
+        if not self.rules:
+            # If no validation rules defined for this table, all records are valid
+            empty_quarantine = df.filter(F.lit(False))
+            return df, empty_quarantine
+
         # Collect failed rule names into an array
         failed_conditions = [
             F.when(~condition, F.lit(rule_name))

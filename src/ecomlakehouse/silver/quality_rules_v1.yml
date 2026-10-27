@@ -6,7 +6,7 @@ tables:
       - columns: [order_id, customer_id, order_status, total_amount, order_date]
     allowed_values:
       - column: order_status
-        values: [PLACED, CONFIRMED, SHIPPED, DELIVERED, CANCELLED, RETURNED]
+        values: [PLACED, CONFIRMED, SHIPPED, DELIVERED, CANCELLED, RETURNED, PARTIALLY_RETURNED, PENDING]
     range_check:
       - column: total_amount
         min: 0.0
