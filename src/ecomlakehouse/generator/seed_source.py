@@ -1,5 +1,5 @@
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from faker import Faker
 from sqlalchemy import create_engine, text
@@ -267,7 +267,9 @@ def seed_orders(connection, count=10000):
             )
 
         order_status = random.choice(order_statuses)
-        order_date = datetime.now() - timedelta(days=random.randint(0, 365))
+        order_date = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+            days=random.randint(0, 365)
+        )
 
         order_result = connection.execute(
             text(

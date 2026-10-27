@@ -1,495 +1,449 @@
-# 🛍️ E-Commerce Data Lakehouse (EcomLakehouse)
+<div align="center">
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
-[![Apache Airflow 3.3.2](https://img.shields.io/badge/Airflow-3.3.2-teal.svg)](https://airflow.apache.org/)
-[![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-blue.svg)](https://www.postgresql.org/)
-[![MinIO Object Storage](https://img.shields.io/badge/MinIO-S3_Compatible-red.svg)](https://min.io/)
-[![Package Manager uv](https://img.shields.io/badge/uv-managed-purple.svg)](https://astral.sh/uv)
+# 🛍️ EcomLakehouse
 
-A modern, production-grade **E-Commerce Data Lakehouse Architecture** built with Python, Apache Airflow, PostgreSQL, and S3-compatible Object Storage (MinIO). The platform ingests transactional data using high-throughput batch and incremental watermark-driven pipelines into a columnar **Bronze Parquet Storage Layer**, powered by automated data generators and scheduled orchestration workflows.
+<p align="center">
+  <b>Production-Grade Event-Driven Medallion Data Lakehouse for E-Commerce</b>
+</p>
+<p align="center">
+  Continuous incremental CDC pipelines, Airflow 3 Asset scheduling, PySpark data quality contracts, and automated quarantine storage.
+</p>
+
+<div align="center">
+
+  <img src="https://img.shields.io/badge/Architecture-Medallion%20Lakehouse-4F9CF9?style=for-the-badge&labelColor=0A1432" alt="Architecture" />
+  <img src="https://img.shields.io/badge/Orchestrator-Apache%20Airflow%203-017CEE?style=for-the-badge&labelColor=0A1432" alt="Airflow" />
+  <img src="https://img.shields.io/badge/Engine-PySpark%20%7C%20Parquet-E25A1C?style=for-the-badge&labelColor=0A1432" alt="PySpark" />
+  <img src="https://img.shields.io/badge/Storage-MinIO%20(S3)-C72C48?style=for-the-badge&labelColor=0A1432" alt="MinIO" />
+  <img src="https://img.shields.io/badge/Database-PostgreSQL%2016-336791?style=for-the-badge&labelColor=0A1432" alt="PostgreSQL" />
+  <img src="https://img.shields.io/badge/Package%20Manager-uv-7E56C2?style=for-the-badge&labelColor=0A1432" alt="uv" />
+
+</div>
+
+<br>
+
+<p align="center">
+  <a href="#-the-problem">The Problem</a> •
+  <a href="#-the-solution">The Solution</a> •
+  <a href="#-architecture">Architecture</a> •
+  <a href="#-data-quality--quarantine-framework">Data Quality</a> •
+  <a href="#-airflow-3-asset-orchestration">Airflow Orchestration</a> •
+  <a href="#-storage-layout--engine">Storage Layout</a> •
+  <a href="#-quick-start-guide">Quick Start</a> •
+  <a href="#-service-ports--connectivity">Service Ports</a>
+</p>
+
+</div>
+
+<br>
 
 ---
 
-## 📋 Table of Contents
+## <img src="https://api.iconify.design/lucide/telescope.svg?color=%234F9CF9" width="20" height="20">&nbsp; The Problem
 
-- [Architectural Overview](#-architectural-overview)
-- [Medallion Lakehouse Architecture](#-medallion-lakehouse-architecture)
-- [Source Data Model & ERD](#-source-data-model--erd)
-- [Key Components & Modules](#-key-components--modules)
-- [Technology Stack](#-technology-stack)
-- [Repository Structure](#-repository-structure)
-- [Configuration & Environment Variables](#-configuration--environment-variables)
-- [Prerequisites](#-prerequisites)
-- [Step-by-Step Setup & Getting Started](#-step-by-step-setup--getting-started)
-- [Airflow Orchestration & DAGs](#-airflow-orchestration--dags)
-- [Data Ingestion Engine & Storage Format](#-data-ingestion-engine--storage-format)
-- [Synthetic Data & Incremental Simulator](#-synthetic-data--incremental-simulator)
-- [Testing & Verification](#-testing--verification)
-- [Future Roadmap](#-future-roadmap)
+Traditional batch ETL workflows and scheduled cron ingestion fall short when scaling modern transactional workloads:
+
+<table width="100%">
+  <tr>
+    <td width="33%" valign="top" align="center">
+      <br>
+      <h3 align="center"><img src="https://api.iconify.design/lucide/clock-alert.svg?color=%234F9CF9" width="18" height="18">&nbsp; Polling Latency</h3>
+      <p align="center">Rigid cron-based schedules waste compute polling idle databases and introduce 30–60 minute delays before downstream analytics reflect fresh transactions.</p>
+      <br>
+    </td>
+    <td width="33%" valign="top" align="center">
+      <br>
+      <h3 align="center"><img src="https://api.iconify.design/lucide/shield-alert.svg?color=%234F9CF9" width="18" height="18">&nbsp; Silent Data Poisoning</h3>
+      <p align="center">A single corrupted record (negative price, future timestamp, or invalid status) either halts the entire pipeline or quietly pollutes production business dashboards.</p>
+      <br>
+    </td>
+    <td width="33%" valign="top" align="center">
+      <br>
+      <h3 align="center"><img src="https://api.iconify.design/lucide/database-zap.svg?color=%234F9CF9" width="18" height="18">&nbsp; CDC Watermark Jitter</h3>
+      <p align="center">Relying on ephemeral Airflow run states risks duplicate reads or skipped increments during container restarts, task retries, or clock skew.</p>
+      <br>
+    </td>
+  </tr>
+</table>
+
+<br>
+
+## <img src="https://api.iconify.design/lucide/cpu.svg?color=%234F9CF9" width="20" height="20">&nbsp; The Solution
+
+**EcomLakehouse** provides a decoupled, resilient, and event-driven Medallion Lakehouse built on modern data engineering standards:
+
+* **Event-Driven Asset Scheduling**: Uses **Airflow 3 Data-Aware Assets** (`Asset("ecomlakehouse://bronze/ingestion_completed")`). The moment Bronze extraction finishes, Silver transforms ignite automatically with **zero polling delay**.
+* **Declarative Quality Contracts & Quarantine**: Implements a declarative YAML contract engine powered by **PySpark**. Clean records advance to Silver; corrupt records are tagged with root-cause error arrays and safely diverted to an audited **Quarantine** area without breaking the pipeline.
+* **Persistent Watermark Checkpoints**: Checkpoints are stored as immutable JSON state files directly in S3 (`bronze/_checkpoints/` and `silver/_checkpoints/`), guaranteeing deterministic, exactly-once incremental extraction cycles under **15 seconds**.
+* **Realistic E-Commerce Event Simulator**: Built-in synthetic event engine generating realistic Indian e-commerce scenarios—UPI/COD workflows, 1:N payment retries, partial item returns, and catalog updates across 500k+ records.
+
+<br>
 
 ---
 
-## 🏗️ Architectural Overview
-
-The **EcomLakehouse** architecture extracts raw transactional entity records from an operational PostgreSQL database and lands them partitioned by date in an S3-compatible object store as optimized Parquet files.
+## <img src="https://api.iconify.design/lucide/layers.svg?color=%234F9CF9" width="20" height="20">&nbsp; Architecture
 
 ```mermaid
 flowchart TD
-    subgraph Operational["Operational Source System"]
+    subgraph Source["Operational Source Tier (PostgreSQL 16)"]
         DB[("PostgreSQL 16<br/>ecommerce DB")]
-        SEED["Seed Data Generator<br/>seed_source.py"]
-        INC_SEED["Live Activity Simulator<br/>incremental_seed_generator.py"]
+        SEED["Source Seeder<br/>seed_source.py"]
+        SIM["Live Event Simulator<br/>incremental_seed_generator.py"]
     end
 
-    subgraph Airflow["Airflow 3.3.2 Orchestration Cluster"]
-        SCHED["Airflow Scheduler"]
-        APISVR["Airflow API Server"]
-        PROC["DAG Processor"]
-        META[("Airflow Postgres Metadata")]
+    subgraph Airflow["Orchestration Engine (Apache Airflow 3.3.2)"]
+        DAG_EXT["incremental_bronze_ingestion<br/>(Watermark-Driven Extract)"]
+        ASSET{"Airflow 3 Asset Event<br/>ecomlakehouse://bronze/ingestion_completed"}
+        DAG_SILVER["incremental_bronze_to_silver<br/>(Data-Aware Triggered)"]
     end
 
-    subgraph Ingestion["Ingestion Pipeline Core"]
-        BATCH_INGEST["Full Batch Extractor<br/>ingestion/batch.py"]
-        INC_INGEST["Incremental Extractor<br/>ingestion/incremental.py"]
-        WRITER["Parquet Bronze Writer<br/>bronze/writer.py"]
+    subgraph Spark["Quality & Validation Engine"]
+        SPARK_VAL["PySpark Quality Validator<br/>YAML Data Contracts"]
     end
 
-    subgraph Storage["Storage Layer"]
-        MINIO["MinIO / AWS S3<br/>Bucket: ecommerce-lake"]
+    subgraph Storage["Lakehouse Storage Tier (MinIO / S3)"]
         BRONZE["Bronze Layer<br/>s3://ecommerce-lake/bronze/{table}/..."]
+        SILVER["Silver Layer<br/>s3://ecommerce-lake/silver/{table}/..."]
+        QUARANTINE["Quarantine Layer<br/>s3://ecommerce-lake/silver/_quarantine/{table}/..."]
+        CP[("Persistent Watermarks<br/>S3 JSON State")]
     end
 
-    SEED -->|"Initial 10k orders / 1k customers"| DB
-    INC_SEED -->|"Simulates live orders, updates & payments"| DB
+    SEED -->|"Bootstrap Master Data"| DB
+    SIM -->|"Simulate 1:N Retries & Returns"| DB
 
-    SCHED -->|"Trigger Every 10 mins"| INC_SEED
-    SCHED -->|"Trigger Every 30 mins"| INC_INGEST
-    SCHED -->|"Manual / Batch Execution"| BATCH_INGEST
+    DB -->|"Extract via updated_at Watermarks"| DAG_EXT
+    DAG_EXT -->|"Write Partitioned Parquet"| BRONZE
+    DAG_EXT -->|"Advance Bronze Watermark"| CP
+    DAG_EXT -->|"Emit Completion Asset"| ASSET
 
-    DB --> BATCH_INGEST
-    DB --> INC_INGEST
+    ASSET -->|"Auto-Trigger Downstream"| DAG_SILVER
+    BRONZE -->|"Read New Parquet Files"| DAG_SILVER
+    DAG_SILVER --> SPARK_VAL
 
-    BATCH_INGEST --> WRITER
-    INC_INGEST --> WRITER
-
-    WRITER -->|"Write Partitioned Parquet"| BRONZE
+    SPARK_VAL -->|"Valid Business Records"| SILVER
+    SPARK_VAL -->|"Corrupt Rows + Error Metadata"| QUARANTINE
+    DAG_SILVER -->|"Advance Silver Watermark"| CP
 ```
 
+### Medallion Tier Specifications
+
+| Layer | Path / Location | Format | Description | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **Bronze** | `s3://ecommerce-lake/bronze/{table}/ingestion_date=YYYY-MM-DD/` | Apache Parquet | Raw, immutable append-only transactional data extracted via timestamp watermarks. | **Active** |
+| **Quarantine** | `s3://ecommerce-lake/silver/_quarantine/{table}/ingestion_date=YYYY-MM-DD/` | Apache Parquet | Isolated anomaly records enriched with `validation_errors` metadata for offline remediation. | **Active** |
+| **Silver** | `s3://ecommerce-lake/silver/{table}/ingestion_date=YYYY-MM-DD/` | Apache Parquet | Validated, schema-enforced, and deduplicated records prepared for analytics and BI. | **Active** |
+| **Gold** | `s3://ecommerce-lake/gold/` | Dimensional Parquet | Star-schema dimensional models (Fact Orders, Dim Customers, Cohort Analytics). | _Roadmap_ |
+
+<br>
+
 ---
 
-## 🥇 Medallion Lakehouse Architecture
+## <img src="https://api.iconify.design/lucide/shield-check.svg?color=%234F9CF9" width="20" height="20">&nbsp; Data Quality & Quarantine Framework
 
-The lakehouse adopts the standard **Medallion Pattern** for data management:
+Validation rules are centrally defined in declarative YAML ([src/ecomlakehouse/silver/quality_rules_v1.yml](src/ecomlakehouse/silver/quality_rules_v1.yml)) and evaluated at scale using high-throughput **Apache Spark** SQL expressions:
 
-| Layer      | Path / Target                                                   | Storage Format             | Description                                                                                                       | Status     |
-| :--------- | :-------------------------------------------------------------- | :------------------------- | :---------------------------------------------------------------------------------------------------------------- | :--------- |
-| **Bronze** | `s3://ecommerce-lake/bronze/{table}/ingestion_date=YYYY-MM-DD/` | Apache Parquet             | Append-only raw data extracted directly from source tables, immutable, append partitioned by ingestion timestamp. | **Active** |
-| **Silver** | `s3://ecommerce-lake/silver/`                                   | Delta / Iceberg / Parquet  | Cleansed, deduplicated, CDC updated, schema-enforced entity tables.                                               | _Planned_  |
-| **Gold**   | `s3://ecommerce-lake/gold/`                                     | Dimensional Models / Marts | Star-schema analytics, KPI aggregates (Revenue, Retention, Sales Funnels).                                        | _Planned_  |
+<table width="100%">
+  <tr>
+    <th>Rule Category</th>
+    <th>Description</th>
+    <th>Sample Assertion Expression</th>
+  </tr>
+  <tr>
+    <td><b>Completeness</b></td>
+    <td>Enforces non-null primary keys and required business columns.</td>
+    <td><code>order_id IS NOT NULL AND customer_id IS NOT NULL</code></td>
+  </tr>
+  <tr>
+    <td><b>Allowed Values / Enums</b></td>
+    <td>Validates allowed state machine transitions and status values.</td>
+    <td><code>order_status IN ('PLACED', 'CONFIRMED', 'SHIPPED', 'DELIVERED', 'CANCELLED', 'RETURNED')</code></td>
+  </tr>
+  <tr>
+    <td><b>Numeric Bounds</b></td>
+    <td>Guarantees positive quantities and non-negative pricing.</td>
+    <td><code>quantity > 0 AND unit_price >= 0.0</code></td>
+  </tr>
+  <tr>
+    <td><b>Temporal Guardrails</b></td>
+    <td>Prevents future transaction timestamps and verifies sequence logic.</td>
+    <td><code>order_date <= current_timestamp() + INTERVAL 1 DAY AND updated_at >= created_at</code></td>
+  </tr>
+  <tr>
+    <td><b>Conditional Integrity</b></td>
+    <td>Asserts relationship consistency across dependent columns.</td>
+    <td><code>(payment_status != 'SUCCESS') OR (paid_at IS NOT NULL)</code></td>
+  </tr>
+  <tr>
+    <td><b>Regex Formatting</b></td>
+    <td>Validates format conformance for customer emails and contact details.</td>
+    <td><code>email RLIKE '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$'</code></td>
+  </tr>
+</table>
+
+### Non-Blocking Quarantine Isolation
+
+When data contract violations occur:
+1. PySpark applies rule assertions and aggregates failed checks into a structured string array: `validation_errors = ['quantity_gt_0', 'payment_status_valid']`.
+2. Clean records (`size(validation_errors) == 0`) flow directly into `silver/{table}/`.
+3. Failing records (`size(validation_errors) > 0`) are written to `silver/_quarantine/{table}/` along with their error context.
+4. The pipeline does **not** fail; watermarks advance cleanly, preventing unblocked processing pipelines while ensuring full auditability.
+
+<br>
 
 ---
 
-## 🗄️ Source Data Model & ERD
+## <img src="https://api.iconify.design/lucide/workflow.svg?color=%234F9CF9" width="20" height="20">&nbsp; Airflow 3 Asset Orchestration
 
-The transactional engine tracks customers, products, categories, stores, orders, order line items, and payment transactions:
+The pipeline is orchestrated with a modern, purely **incremental, data-aware event architecture**:
+
+```text
+┌─────────────────────────────────┐
+│  incremental_bronze_ingestion   │
+│  (Scheduled: 0/30 * * * *)      │
+└───────────────┬─────────────────┘
+                │ Emits: Asset("ecomlakehouse://bronze/ingestion_completed")
+                ▼
+┌─────────────────────────────────┐
+│  incremental_bronze_to_silver   │
+│  (Asset-Triggered: Instant)     │
+└─────────────────────────────────┘
+```
+
+| DAG ID | Schedule / Trigger | Catchup | Description |
+| :--- | :--- | :--- | :--- |
+| **`incremental_bronze_ingestion`** | `0/30 * * * *` (Every 30m) | `False` | Extracts modified records using `updated_at` watermarks from PostgreSQL. Uses an end-of-pipeline barrier task to emit the completion Asset once all 7 tables commit. |
+| **`incremental_bronze_to_silver`** | `[Asset]` (Automatic) | `False` | Triggered instantaneously upon Bronze completion. Validates raw Parquet files via Spark, writes clean rows to Silver, routes anomalies to Quarantine, and advances Silver watermarks. |
+| **`incremental_seed_generator`** | `*/10 * * * *` (Every 10m) | `False` | Simulates high-velocity e-commerce user activity: UPI/COD transactions, partial order returns, payment retries, and customer profile updates. |
+
+<br>
+
+---
+
+## <img src="https://api.iconify.design/lucide/folder-tree.svg?color=%234F9CF9" width="20" height="20">&nbsp; Storage Layout & Engine
+
+The Lakehouse structure is organized into clean, partitioned, and isolated object prefixes:
+
+```text
+ecommerce-lake/
+├── bronze/
+│   ├── _staging/{run_id}/
+│   │   ├── orders.parquet
+│   │   └── orders_transformed.parquet
+│   ├── _checkpoints/
+│   │   ├── categories.json
+│   │   ├── customers.json
+│   │   ├── order_items.json
+│   │   ├── orders.json
+│   │   └── payments.json
+│   ├── categories/ingestion_date=2026-10-27/categories_20261027T120855Z.parquet
+│   ├── customers/ingestion_date=2026-10-27/customers_20261027T120855Z.parquet
+│   ├── order_items/ingestion_date=2026-10-27/order_items_20261027T120855Z.parquet
+│   ├── orders/ingestion_date=2026-10-27/orders_20261027T120855Z.parquet
+│   └── payments/ingestion_date=2026-10-27/payments_20261027T120855Z.parquet
+├── silver/
+│   ├── _checkpoints/
+│   │   ├── categories.json
+│   │   ├── customers.json
+│   │   ├── order_items.json
+│   │   ├── orders.json
+│   │   └── payments.json
+│   ├── _quarantine/
+│   │   └── orders/ingestion_date=2026-10-27/orders_quarantine_20261027T121355Z.parquet
+│   ├── categories/ingestion_date=2026-10-27/categories_20261027T121355Z.parquet
+│   ├── customers/ingestion_date=2026-10-27/customers_20261027T121355Z.parquet
+│   ├── order_items/ingestion_date=2026-10-27/order_items_20261027T121355Z.parquet
+│   ├── orders/ingestion_date=2026-10-27/orders_20261027T121355Z.parquet
+│   └── payments/ingestion_date=2026-10-27/payments_20261027T121355Z.parquet
+```
+
+<br>
+
+---
+
+## <img src="https://api.iconify.design/lucide/database.svg?color=%234F9CF9" width="20" height="20">&nbsp; Source Relational Model
+
+The source transactional database represents a full-featured e-commerce catalog and order management system:
 
 ```mermaid
 erDiagram
-    categories ||--o{ products : contains
-    products ||--o{ order_items : ordered_in
-    customers ||--o{ orders : places
+    categories ||--o{ products : categorizes
+    products ||--o{ order_items : contains
     stores ||--o{ orders : fulfills
-    orders ||--o{ order_items : includes
-    orders ||--o{ payments : paid_by
-    payment_methods ||--o{ payments : used_in
-
-    categories {
-        bigserial category_id PK
-        varchar category_name
-        timestamp created_at
-        timestamp updated_at
-    }
-
-    products {
-        bigserial product_id PK
-        bigint category_id FK
-        varchar product_name
-        varchar sku
-        numeric price
-        integer stock_quantity
-        boolean is_active
-        timestamp created_at
-        timestamp updated_at
-    }
+    customers ||--o{ orders : places
+    orders ||--o{ order_items : contains
+    orders ||--o{ payments : collects
+    payment_methods ||--o{ payments : uses
 
     customers {
-        bigserial customer_id PK
+        bigint customer_id PK
         varchar first_name
-        varchar last_name
         varchar email
-        varchar phone
-        varchar city
-        varchar state
-        varchar country
-        timestamp created_at
         timestamp updated_at
     }
-
-    stores {
-        bigserial store_id PK
-        varchar store_name
-        varchar city
-        varchar state
-        timestamp created_at
-        timestamp updated_at
-    }
-
-    payment_methods {
-        bigserial payment_method_id PK
-        varchar method_name
-        timestamp created_at
-    }
-
     orders {
-        bigserial order_id PK
+        bigint order_id PK
         bigint customer_id FK
-        bigint store_id FK
         varchar order_status
-        timestamp order_date
         numeric total_amount
-        timestamp created_at
+        timestamp order_date
         timestamp updated_at
     }
-
     order_items {
-        bigserial order_item_id PK
+        bigint order_item_id PK
         bigint order_id FK
         bigint product_id FK
         integer quantity
         numeric unit_price
         varchar item_status
-        timestamp created_at
         timestamp updated_at
     }
-
     payments {
-        bigserial payment_id PK
+        bigint payment_id PK
         bigint order_id FK
         bigint payment_method_id FK
         varchar payment_status
         numeric amount
-        varchar transaction_reference
         timestamp paid_at
-        timestamp created_at
         timestamp updated_at
     }
 ```
 
----
-
-## 🧩 Key Components & Modules
-
-### 1. Ingestion Engine (`src/ecomlakehouse/ingestion/`)
-
-- **`postgres.py`**: Handles SQLAlchemy connection pooling and executes optimized pandas SQL queries for batch and timestamp-based incremental extracts.
-- **`batch.py`**: Executes full snapshot extractions across all 8 transactional tables, optionally wiping prior raw landed objects in Bronze before reloading.
-- **`incremental.py`**: Leverages Airflow execution interval watermarks (`prev_data_interval_end_success` to `data_interval_end`) to fetch only newly inserted or modified records (`updated_at` filter).
-
-### 2. Bronze Writer (`src/ecomlakehouse/bronze/writer.py`)
-
-- Transforms pandas DataFrames into compressed Parquet buffers via PyArrow.
-- Streams Parquet files to MinIO/S3 using the following object key structure:
-  ```text
-  bronze/{table_name}/ingestion_date={YYYY-MM-DD}/{table_name}_{YYYYMMDDTHHMMSSZ}.parquet
-  ```
-
-### 3. Data Generator Engine (`src/ecomlakehouse/generator/`)
-
-- **`seed_source.py`**: Performs initial bootstrapping of master data (categories, stores, payment methods), 1,000 customers, 100 products, and 10,000 historic orders.
-- **`incremental_seed_generator.py`**: Simulates production e-commerce activity:
-  - Registers 5–15 new customers per cycle.
-  - Updates 1–5 customer profiles.
-  - Generates 10–25 new multi-item orders calculated using exact catalog prices, discounts (30% odds), 18% tax, and conditional shipping fees.
-  - Simulates payment authorizations (90% success rate).
-  - Drives state machine updates for active orders (`PENDING` $\rightarrow$ `CONFIRMED` $\rightarrow$ `PROCESSING` $\rightarrow$ `SHIPPED` $\rightarrow$ `DELIVERED`).
-
-### 4. Storage Utility (`src/ecomlakehouse/utils/storage.py`)
-
-- Centralized Boto3 S3 client creator configured for MinIO or AWS S3 endpoint authentication, S3v4 signature protocols, and bucket configuration.
+<br>
 
 ---
 
-## 🛠️ Technology Stack
+## <img src="https://api.iconify.design/lucide/wrench.svg?color=%234F9CF9" width="20" height="20">&nbsp; Technology Stack
 
-- **Core Language**: Python 3.11+
-- **Dependency Management**: [`uv`](https://astral.sh/uv) & `pyproject.toml`
-- **Orchestration**: Apache Airflow 3.3.2 (API Server, Scheduler, DAG Processor, LocalExecutor)
-- **Primary Relational DB**: PostgreSQL 16
-- **Object Storage**: MinIO (S3 API Compatible)
-- **Data Libraries**: Pandas, PyArrow, SQLAlchemy, Psycopg 3, Boto3, Pendulum, Faker, Pydantic
+* **Language**: Python 3.11+
+* **Package Manager**: [`uv`](https://astral.sh/uv) (Extremely fast, Rust-backed package resolver)
+* **Orchestration**: Apache Airflow 3.3.2 (LocalExecutor, Data-Aware Assets, API Server, DAG Processor)
+* **Compute & Validation**: Apache Spark 3.5+ (PySpark with OpenJDK 17)
+* **Source & Metadata Database**: PostgreSQL 16
+* **Lakehouse Object Storage**: MinIO (AWS S3-compatible, high-throughput storage)
+* **Core Libraries**: PyArrow, Pandas, SQLAlchemy 2.0, Psycopg 3, Boto3, Pendulum, PyYAML, Faker
+
+<br>
 
 ---
 
-## 📁 Repository Structure
+## <img src="https://api.iconify.design/lucide/folder-git-2.svg?color=%234F9CF9" width="20" height="20">&nbsp; Repository Structure
 
 ```text
 EcomLakehouse/
-├── .env.example                     # Environment template file
-├── .gitignore                       # Git ignore rules (logs, venv, data)
-├── pyproject.toml                   # UV Project dependencies & build configuration
-├── uv.lock                          # Deterministic dependency lockfile
-├── docker-compose.yml               # Root services (PostgreSQL source + MinIO Object Store)
+├── .env.example                     # Environment template configuration
+├── pyproject.toml                   # UV Project dependencies & metadata
+├── uv.lock                          # Deterministic lockfile
+├── docker-compose.yml               # Unified multi-service Compose stack
 ├── README.md                        # Project documentation
 │
-├── airflow/                         # Airflow Environment & DAGs
-│   ├── docker-compose.yml           # Airflow 3.3.2 stack (API, Scheduler, Postgres, Processor)
-│   └── dags/                        # Active Airflow Pipelines
-│       ├── ecom_initial_bronze_ingestion.py   # Full batch initial ingestion DAG
-│       ├── incremental_ingestion.py           # 30-min incremental watermark DAG
-│       ├── incremental_seed_generator.py     # 10-min live synthetic traffic DAG
-│       └── test_ecom_postgres.py              # PostgreSQL connectivity test DAG
+├── airflow/
+│   ├── Dockerfile                   # Multi-arch custom image (Airflow + Java 17 + PySpark)
+│   ├── dags/                        # Active Airflow Pipelines
+│   │   ├── incremental_bronze_ingestion.py   # Postgres -> Bronze incremental extract
+│   │   ├── bronze_to_silver.py               # Bronze -> Silver PySpark quality & quarantine
+│   │   └── incremental_seed_generator.py     # Live event simulator trigger
+│   └── logs/                        # Airflow task logs
 │
-├── config/                          # Configuration files directory
 ├── sql/
-│   └── 01_source_schema.sql         # Source DDL for PostgreSQL database
+│   └── 01_source_schema.sql         # Source schema, indexes, and updated_at triggers
 │
 └── src/
-    └── ecomlakehouse/               # Core Python Package (`ecomlakehouse`)
+    └── ecomlakehouse/
         ├── bronze/
-        │   └── writer.py            # Converts DataFrames & pushes Parquet to S3/MinIO
+        │   └── writer.py            # Partitioned Parquet writer for Bronze layer
+        ├── constents/
+        │   ├── checkpoints.py       # Centralized checkpoint configurations & constants
+        │   └── tables.py            # Registered source table definitions
         ├── generator/
-        │   ├── seed_source.py       # Initial source database seeder
-        │   └── incremental_seed_generator.py  # Realistic transaction simulator
+        │   ├── flipkart_catalog.py  # Realistic Indian e-commerce catalog & personas
+        │   ├── seed_source.py       # Bootstrap seeder for initial master data
+        │   └── incremental_seed_generator.py  # Live transaction simulator (retries, returns)
         ├── ingestion/
-        │   ├── batch.py             # Full snapshot batch extraction logic
-        │   ├── incremental.py       # Watermark incremental extraction logic
+        │   ├── checkpoint.py        # S3 persistent watermark reader & writer (Bronze & Silver)
         │   └── postgres.py          # SQLAlchemy PostgreSQL query helper
-        ├── quality/                 # (Placeholder) Data quality assertions
-        ├── silver/                  # (Placeholder) Silver cleaning & transformations
-        ├── gold/                    # (Placeholder) Gold dimensional modeling
+        ├── quality/
+        │   └── validator.py         # PySpark declarative rule validation engine
+        ├── silver/
+        │   ├── extractor.py         # Bronze incremental Parquet extractor
+        │   ├── quality_rules_v1.yml # Declarative YAML data contracts
+        │   └── writer.py            # Silver & Quarantine Parquet writers
         └── utils/
-            ├── storage.py           # S3 / MinIO client initializer
-            └── test_storage.py      # Storage connectivity helper test script
+            ├── logging_utils.py     # Structured logging utilities
+            ├── postgres.py          # Airflow PostgreSQL hook wrapper
+            ├── spark.py             # Isolated PySpark session factory
+            └── storage.py           # MinIO / AWS S3 client factory
 ```
 
----
-
-## ⚙️ Configuration & Environment Variables
-
-Copy `.env.example` to `.env` in the root directory before launching services:
-
-```ini
-# S3 / MinIO Object Storage
-S3_ENDPOINT=http://localhost:9000
-S3_ACCESS_KEY=minioadmin
-S3_SECRET_KEY=minioadmin123
-S3_BUCKET=ecommerce-lake
-S3_REGION=us-east-1
-
-# Source PostgreSQL Database Connection
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5441
-POSTGRES_USER=ecom_user
-POSTGRES_PASSWORD=ecom_password
-POSTGRES_DB=ecommerce
-
-# Synthetic Generator Parameters (Optional Overrides)
-NEW_CUSTOMERS_MIN=5
-NEW_CUSTOMERS_MAX=15
-NEW_ORDERS_MIN=10
-NEW_ORDERS_MAX=25
-```
-
-> [!NOTE]
-> Inside the Docker container network (`ecom-lakehouse-network`), Airflow services connect to PostgreSQL via host `ecom-postgres:5432` and MinIO via endpoint `http://ecom-minio:9000`.
+<br>
 
 ---
 
-## 🖥️ Port Matrix & Services Overview
+## <img src="https://api.iconify.design/lucide/rocket.svg?color=%234F9CF9" width="20" height="20">&nbsp; Quick Start Guide
 
-| Container Service          | Exposed Host Port | Container Port | Service Description             | Credentials                    |
-| :------------------------- | :---------------- | :------------- | :------------------------------ | :----------------------------- |
-| **`ecom-postgres`**        | `5441`            | `5432`         | Source E-Commerce PostgreSQL DB | `ecom_user` / `ecom_password`  |
-| **`ecom-minio` (API)**     | `9000`            | `9000`         | S3 API Endpoint                 | `minioadmin` / `minioadmin123` |
-| **`ecom-minio` (Console)** | `9001`            | `9001`         | MinIO Web Console UI            | `minioadmin` / `minioadmin123` |
-| **`airflow-apiserver`**    | `8080`            | `8080`         | Airflow Web UI & API            | `airflow` / `airflow`          |
-| **`airflow-postgres`**     | `5440`            | `5432`         | Airflow Metadata Storage DB     | `airflow` / `airflow`          |
-
----
-
-## ⚡ Prerequisites
-
-Ensure the following tools are installed on your host environment:
-
-1. [Docker](https://www.docker.com/) & Docker Compose (v2.20+)
-2. [Python 3.11+](https://www.python.org/)
-3. [`uv`](https://astral.sh/uv) package manager
-4. `git` & `curl`
-
----
-
-## 🚀 Step-by-Step Setup & Getting Started
-
-### Step 1: Clone Repository & Setup Virtual Environment
+### Step 1: Clone & Configure Environment
 
 ```bash
 git clone https://github.com/mukeshkumar-krishnamoorthi/EcomLakehouse.git
 cd EcomLakehouse
 
-# Sync dependencies using uv
+# Sync dependencies with uv
 uv sync
-```
 
-### Step 2: Configure Environment Files
-
-```bash
+# Configure environment variables
 cp .env.example .env
 ```
 
-### Step 3: Create Docker Network
+> **Note:** Generate a secure Fernet key for Airflow:
+> ```bash
+> python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+> ```
+> Add the generated string to `AIRFLOW_FERNET_KEY` in `.env`.
 
-Create the shared external bridge network required for cross-container communication:
+### Step 2: Launch the Docker Compose Stack
+
+A unified Compose file starts PostgreSQL, MinIO, and Airflow 3 services:
 
 ```bash
-docker network create ecom-lakehouse-network
+docker compose up -d --build
 ```
 
-### Step 4: Start Operational Services (PostgreSQL & MinIO)
+- PostgreSQL automatically provisions tables, foreign keys, and indexes via `sql/01_source_schema.sql`.
+- `airflow-init` executes database migrations, creates the default admin user, configures the `ecom_postgres` connection, and provisions the `ecommerce-lake` storage bucket.
+
+### Step 3: Seed Initial Historical Data
 
 ```bash
-docker compose up -d
-```
-
-Verify container health:
-
-```bash
-docker compose ps
-```
-
-### Step 5: Initialize Source Schema & Seed Initial Transactional Data
-
-Execute the DDL schema file and populate base historical records:
-
-```bash
-# Apply schema tables
-uv run python -c "
-from sqlalchemy import create_engine, text
-engine = create_engine('postgresql+psycopg://ecom_user:ecom_password@localhost:5441/ecommerce')
-with open('sql/01_source_schema.sql') as f:
-    with engine.begin() as conn:
-        conn.execute(text(f.read()))
-print('Schema created successfully!')
-"
-
-# Seed base historical source data (10k orders, 1k customers)
 uv run python src/ecomlakehouse/generator/seed_source.py
 ```
 
-### Step 6: Create MinIO Storage Bucket
+### Step 4: Run Airflow Pipelines
 
-Access MinIO Console at [`http://localhost:9001`](http://localhost:9001) or create bucket via CLI / Python script:
+1. Open the Airflow UI at [`http://localhost:8080`](http://localhost:8080) (using your configured credentials).
+2. Trigger **`incremental_bronze_ingestion`**.
+3. Once completed, it automatically emits the Asset event, instantaneously triggering **`incremental_bronze_to_silver`**!
+4. Inspect the MinIO Web Console at [`http://localhost:9001`](http://localhost:9001) to view Parquet datasets landed in `bronze/`, `silver/`, and `silver/_quarantine/`.
 
-```bash
-uv run python -c "
-import boto3
-from botocore.client import Config
-s3 = boto3.client('s3', endpoint_url='http://localhost:9000', aws_access_key_id='minioadmin', aws_secret_access_key='minioadmin123', config=Config(signature_version='s3v4'))
-s3.create_bucket(Bucket='ecommerce-lake')
-print('Bucket ecommerce-lake ready!')
-"
-```
-
-### Step 7: Launch Apache Airflow Stack
-
-```bash
-docker compose -f airflow/docker-compose.yml up -d
-```
-
-Check Airflow initialization logs:
-
-```bash
-docker compose -f airflow/docker-compose.yml logs -f airflow-init
-```
-
-Once initialized, open the Airflow UI at [`http://localhost:8080`](http://localhost:8080) (User: `airflow`, Password: `airflow`).
-
-### Step 8: Configure Airflow PostgreSQL Connection
-
-In the Airflow Web UI:
-
-1. Navigate to **Admin** $\rightarrow$ **Connections**.
-2. Add a new Connection:
-   - **Connection Id**: `ecom_postgres`
-   - **Connection Type**: `Postgres`
-   - **Host**: `ecom-postgres`
-   - **Database**: `ecommerce`
-   - **Login**: `ecom_user`
-   - **Password**: `ecom_password`
-   - **Port**: `5432`
-3. Click **Test** and **Save**.
+<br>
 
 ---
 
-## 🔄 Airflow Orchestration & DAGs
+## <img src="https://api.iconify.design/lucide/server.svg?color=%234F9CF9" width="20" height="20">&nbsp; Service Ports & Connectivity
 
-| DAG ID                          | Schedule                   | Catchup | Description                                                                                                                          |
-| :------------------------------ | :------------------------- | :------ | :----------------------------------------------------------------------------------------------------------------------------------- |
-| `ecom_initial_bronze_ingestion` | Manual (`None`)            | `False` | Performs full snapshot batch extractions for all source tables and writes Parquet objects to Bronze S3 storage.                      |
-| `incremental_ingestion`         | `0/30 * * * *` (Every 30m) | `False` | Watermark-driven extract fetching records where `updated_at` falls between `prev_data_interval_end_success` and `data_interval_end`. |
-| `incremental_seed_generator`    | `*/10 * * * *` (Every 10m) | `False` | Simulates real-time e-commerce user activity (new user signups, order placements, payments, updates).                                |
-| `test_ecom_postgres`            | Manual                     | `False` | Verification DAG to test PostgreSQL hook connectivity inside Airflow tasks.                                                          |
+| Service | Container Name | Host Port | Internal Port | Purpose |
+| :--- | :--- | :--- | :--- | :--- |
+| **PostgreSQL (OLTP)** | `ecom-postgres` | `5441` | `5432` | Source transactional database |
+| **MinIO S3 API** | `ecom-minio` | `9000` | `9000` | S3-compatible Object Storage |
+| **MinIO Web Console** | `ecom-minio` | `9001` | `9001` | Web storage browser interface |
+| **Airflow Web UI** | `ecom-airflow-apiserver` | `8080` | `8080` | Airflow 3 Web Console & API |
+| **Airflow PostgreSQL**| `ecom-airflow-postgres` | `5442` | `5432` | Airflow internal metadata database |
+| **Airflow Scheduler** | `ecom-airflow-scheduler` | — | — | DAG orchestration engine |
+| **Airflow DAG Processor** | `ecom-airflow-dag-processor`| — | — | DAG discovery & parser |
 
----
-
-## 💾 Data Ingestion Engine & Storage Format
-
-Data landed in the Bronze storage layer is partitioned by ingestion date:
-
-```text
-ecommerce-lake/
-└── bronze/
-    ├── categories/
-    │   └── ingestion_date=2026-10-08/
-    │       └── categories_20261008T163000Z.parquet
-    ├── customers/
-    │   └── ingestion_date=2026-10-08/
-    │       └── customers_20261008T163000Z.parquet
-    ├── orders/
-    │   └── ingestion_date=2026-10-08/
-    │       └── orders_20261008T163000Z.parquet
-    ├── order_items/
-    ├── payment_methods/
-    ├── payments/
-    ├── products/
-    └── stores/
-```
-
----
-
-## 🧪 Testing & Verification
-
-Run tests to verify package integrity and storage utilities:
-
-```bash
-# Run pytest suite
-uv run pytest
-
-# Verify S3 connection
-uv run python src/ecomlakehouse/utils/test_storage.py
-```
-
----
-
-## 🛣️ Future Roadmap
-
-- [ ] **Silver Layer (dbt & Apache Spark)**: Implement CDC (Change Data Capture) merges, data deduplication, schema enforcement, and data modeling using dbt-core and PySpark.
-- [ ] **Data Quality Gateways**: Integrate Great Expectations / Soda SQL assertions on landed Bronze & Silver datasets.
-- [ ] **Gold Layer Dimensional Models**: Build analytics-ready Kimball star schemas (Fact Sales, Dim Customers, Dim Products).
-- [ ] **Interactive Query Engine**: Add Trino / Presto service container for SQL analytics over S3 Parquet tables.
+<br>
 
 ---
 
 ## 👤 Author & License
 
-Developed by **Mukeshkumar Krishnamoorthi** ([mukeshkumar.krishnamoorthi@gmail.com](mailto:mukeshkumar.krishnamoorthi@gmail.com)).
-Distributed under the MIT License.
+Developed by **Mukeshkumar Krishnamoorthi**  
+Distributed under the **MIT License**.
