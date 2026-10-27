@@ -1,0 +1,69 @@
+version: 1
+
+tables:
+  orders:
+    completeness:
+      - columns: [order_id, customer_id, order_status, total_amount, order_date]
+    allowed_values:
+      - column: order_status
+        values: [PLACED, CONFIRMED, SHIPPED, DELIVERED, CANCELLED, RETURNED]
+    range_check:
+      - column: total_amount
+        min: 0.0
+    temporal_logic:
+      - column: order_date
+        cannot_be_future: true
+    temporal_order:
+      - before_column: created_at
+        after_column: updated_at
+
+  order_items:
+    completeness:
+      - columns: [order_item_id, order_id, product_id, quantity, unit_price, item_status]
+    range_check:
+      - column: quantity
+        min_exclusive: 0 # quantity > 0
+      - column: unit_price
+        min: 0.0
+    allowed_values:
+      - column: item_status
+        values: [ORDERED, SHIPPED, DELIVERED, CANCELLED, RETURNED]
+    temporal_order:
+      - before_column: created_at
+        after_column: updated_at
+
+  payments:
+    completeness:
+      - columns: [payment_id, order_id, payment_method_id, payment_status, amount]
+    range_check:
+      - column: amount
+        min_exclusive: 0.0
+    allowed_values:
+      - column: payment_status
+        values: [PENDING, SUCCESS, FAILED, REFUNDED]
+    conditional_rule:
+      # If payment is successful, paid_at cannot be null
+      - condition: "payment_status == 'SUCCESS'"
+        assertion: "paid_at IS NOT NULL"
+
+  customers:
+    completeness:
+      - columns: [customer_id, first_name, email]
+    regex_check:
+      - column: email
+        pattern: "^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$"
+    string_length:
+      - column: first_name
+        min_length: 1
+
+  products:
+    completeness:
+      - columns: [product_id, category_id, product_name, sku, price]
+    range_check:
+      - column: price
+        min_exclusive: 0.0
+      - column: stock_quantity
+        min: 0
+    type_integrity:
+      - column: is_active
+        expected_type: boolean
