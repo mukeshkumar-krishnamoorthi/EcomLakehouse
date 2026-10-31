@@ -43,13 +43,14 @@ def get_checkpoint(checkpoint: str, table_name: str) -> str | None:
         raise
 
     state = json.loads(response["Body"].read())
-    return state.get("last_processed_key")
+    return state
 
 
 def save_checkpoint(
     checkpoint: str,
     table_name: str,
     last_processed_key: str | None,
+    status: str | None = "success",
 ) -> None:
     if last_processed_key is None:
         return
@@ -61,6 +62,7 @@ def save_checkpoint(
     state = {
         "table_name": table_name,
         "last_processed_key": last_processed_key,
+        "status": status
     }
 
     s3.put_object(

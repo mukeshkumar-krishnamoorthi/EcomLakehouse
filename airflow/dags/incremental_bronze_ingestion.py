@@ -70,24 +70,30 @@ def incremental_bronze_ingestion():
     ) -> dict:
         """Extract source rows and stage them in MinIO as Parquet."""
 
+        previous_checkpoint = (
+            checkpoint.get('last_processed_key')
+            if checkpoint
+            else None
+        )
+
         context = get_current_context()
         run_id = context["run_id"]
-        end_time = context.get("data_interval_end") or pendulum.now("UTC")
+        end_time = pendulum.now("UTC")
 
         engine = get_connection(conn_id="ecom_postgres")
 
         try:
             logger.info(
-                "Extracting table=%s from checkpoint=%s until=%s",
+                "Extracting table=%s from previous_checkpoint=%s until=%s",
                 table_name,
-                checkpoint,
+                previous_checkpoint,
                 end_time,
             )
 
             df = extract_incremental(
                 engine=engine,
                 table_name=table_name,
-                start_time=checkpoint,
+                start_time=previous_checkpoint,
                 end_time=end_time,
             )
 
@@ -96,15 +102,9 @@ def incremental_bronze_ingestion():
                     "table_name": table_name,
                     "status": "no_changes",
                     "stage_key": None,
-                    "latest_checkpoint": checkpoint,
+                    "latest_checkpoint": previous_checkpoint,
                     "rows": 0,
                 }
-
-            if "updated_at" not in df.columns:
-                raise ValueError(
-                    f"{table_name} has no updated_at column. "
-                    "Configure a table-specific watermark."
-                )
 
             timestamps = pd.to_datetime(
                 df["updated_at"],
@@ -118,6 +118,25 @@ def incremental_bronze_ingestion():
                 )
 
             latest_checkpoint = timestamps.max().isoformat()
+
+            if (
+                previous_checkpoint is not None
+                and pd.Timestamp(latest_checkpoint)
+                <= pd.Timestamp(previous_checkpoint)
+            ):
+                return {
+                    "table_name": table_name,
+                    "status": "no_changes",
+                    "stage_key": None,
+                    "latest_checkpoint": previous_checkpoint,
+                    "rows": 0,
+                }
+
+            if "updated_at" not in df.columns:
+                raise ValueError(
+                    f"{table_name} has no updated_at column. "
+                    "Configure a table-specific watermark."
+                )
 
             # Keep source data unchanged in Bronze staging.
             buffer = io.BytesIO()
@@ -236,6 +255,7 @@ def incremental_bronze_ingestion():
             checkpoint=CHECKPOINT,
             table_name=result["table_name"],
             last_processed_key=result["latest_checkpoint"],
+            status=result['status']
         )
 
         logger.info(

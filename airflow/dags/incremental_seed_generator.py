@@ -1,15 +1,16 @@
 from datetime import datetime
 
-from airflow import DAG
 from airflow.providers.standard.operators.bash import BashOperator
 
+from airflow import DAG
 
 with DAG(
     dag_id="incremental_seed_generator",
     start_date=datetime(2026, 10, 7),
     schedule="* * * * *",
+    max_active_runs=1,
     catchup=False,
-    tags=["Incremental", "Seed"],
+    tags=["Incremental", "Seed", "Postgres", "Source"],
 ) as dag:
 
     run_incremental_seed_generation = BashOperator(

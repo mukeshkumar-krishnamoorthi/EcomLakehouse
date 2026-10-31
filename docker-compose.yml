@@ -1,7 +1,7 @@
 name: ecomlakehouse
 
 x-airflow-image: &airflow-image
-  image: ecomlakehouse-airflow:latest
+  image: ecomlakehouse-airflow:3.3.2
   build:
     context: .
     dockerfile: airflow/Dockerfile
@@ -12,7 +12,7 @@ x-airflow-common: &airflow-common
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-    AIRFLOW__API_AUTH__JWT_SECRET: "change-this-to-a-long-random-secret-8f7c3d91b5e24a6f"
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://ecom-airflow-apiserver:8080/execution/
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@ecom-airflow-postgres:5432/airflow
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
@@ -45,7 +45,6 @@ x-airflow-common: &airflow-common
     - ecom-lakehouse-network
 
 services:
-
   # ---------------------------------------------------------------------------
   # DATA STORAGE LAYER
   # ---------------------------------------------------------------------------

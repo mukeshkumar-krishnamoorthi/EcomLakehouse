@@ -40,10 +40,13 @@ def extract_data_from_bronze(
         key=lambda obj: obj["Key"],
     )
 
+    if isinstance(last_processed_key, dict):
+        last_processed_key = last_processed_key.get("last_processed_key")
+
     if last_processed_key is not None:
         parquet_objects = [
             obj for obj in parquet_objects
-            if obj["Key"] > last_processed_key
+            if obj["Key"] > str(last_processed_key)
         ]
 
     if not parquet_objects:

@@ -37,9 +37,14 @@ def incremental_bronze_to_silver():
     @task
     def ingest_table(table_name: str) -> dict:
         # 1. Load checkpoint
-        last_key = get_checkpoint(
+        checkpoint_data = get_checkpoint(
             checkpoint=CHECKPOINT,
             table_name=table_name
+        )
+        last_key = (
+            checkpoint_data.get("last_processed_key")
+            if isinstance(checkpoint_data, dict)
+            else checkpoint_data
         )
 
         # 2. Extract new Bronze files
@@ -109,6 +114,7 @@ def incremental_bronze_to_silver():
             checkpoint=CHECKPOINT,
             table_name=table_name,
             last_processed_key=latest_key,
+            status="success"
         )
 
         return {

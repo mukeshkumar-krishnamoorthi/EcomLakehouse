@@ -90,9 +90,9 @@ class DataQualityValidator:
             empty_quarantine = df.filter(F.lit(False))
             return df, empty_quarantine
 
-        # Collect failed rule names into an array
+        # Collect failed rule names into an array (fails if condition is False OR Null)
         failed_conditions = [
-            F.when(~condition, F.lit(rule_name))
+            F.when(~condition | condition.isNull(), F.lit(rule_name))
             for rule_name, condition in self.rules
         ]
 
