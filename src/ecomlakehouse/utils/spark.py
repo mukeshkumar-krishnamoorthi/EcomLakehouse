@@ -7,12 +7,16 @@ def get_spark(include_packages: bool = False):
     s3_endpoint = os.getenv("S3_ENDPOINT", "http://ecom-minio:9000")
     s3_access_key = os.getenv("S3_ACCESS_KEY", "minioadmin")
     s3_secret_key = os.getenv("S3_SECRET_KEY", "minioadmin123")
+    driver_memory = os.getenv("SPARK_DRIVER_MEMORY", "2g")
+    shuffle_partitions = os.getenv("SPARK_SHUFFLE_PARTITIONS", "16")
 
     builder = (
         SparkSession.builder
         .appName("EcomLakehouse")
-        .config("spark.driver.memory", "1g")
-        .config("spark.sql.shuffle.partitions", "4")
+        .config("spark.driver.memory", driver_memory)
+        .config("spark.driver.maxResultSize", "1g")
+        .config("spark.sql.shuffle.partitions", shuffle_partitions)
+        .config("spark.ui.port", "4040")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.endpoint", s3_endpoint)
         .config("spark.hadoop.fs.s3a.access.key", s3_access_key)

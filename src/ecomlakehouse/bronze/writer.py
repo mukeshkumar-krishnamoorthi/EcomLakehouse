@@ -1,5 +1,5 @@
+from datetime import UTC, datetime
 from io import BytesIO
-from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -20,7 +20,7 @@ def write_dataframe_to_bronze(
     if df.empty:
         raise ValueError(f"No data found for table: {table_name}")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     ingestion_date = now.strftime("%Y-%m-%d")
     ingestion_timestamp = now.strftime("%Y%m%dT%H%M%SZ")
@@ -38,6 +38,8 @@ def write_dataframe_to_bronze(
         buffer,
         index=False,
         engine="pyarrow",
+        coerce_timestamps="us",
+        allow_truncated_timestamps=True,
     )
 
     buffer.seek(0)

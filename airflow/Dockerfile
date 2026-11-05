@@ -28,5 +28,5 @@ RUN pip install --no-cache-dir \
     "psycopg[binary]" \
     "sqlalchemy" \
     "boto3" \
-    "pandas" \
+    "pandas<3.0.0" \
     "pyarrow"

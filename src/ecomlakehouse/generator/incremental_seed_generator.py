@@ -19,7 +19,8 @@ import os
 import random
 import sys
 import time
-from datetime import UTC, datetime
+import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import MetaData, create_engine, select, text
@@ -30,6 +31,27 @@ from ecomlakehouse.generator.flipkart_catalog import (
     generate_payment_reference,
     money,
 )
+
+
+def with_deadlock_retry(func, max_attempts=5, initial_delay=0.3):
+    """Execute a database function with exponential backoff if a deadlock or lock timeout occurs."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return func()
+        except Exception as exc:
+            err_msg = str(exc).lower()
+            if "deadlock" in err_msg or "lock wait timeout" in err_msg or "sharelock" in err_msg:
+                if attempt < max_attempts:
+                    sleep_sec = initial_delay * (2 ** (attempt - 1)) + random.uniform(0.1, 0.4)
+                    logger.warning(
+                        "Deadlock/lock conflict detected on attempt %d/%d; retrying in %.2fs...",
+                        attempt,
+                        max_attempts,
+                        sleep_sec,
+                    )
+                    time.sleep(sleep_sec)
+                    continue
+            raise
 
 # ---------------------------------------------------------------------------
 # LOGGING SETUP
@@ -150,12 +172,17 @@ def create_incremental_products(connection, count: int) -> int:
         cat_id, cat_name = random.choice(categories)
         sku_num = max_product_id + i
         item = generate_flipkart_product(cat_name, sku_num)
+        price = item["price"]
+
+        # Anomaly injection: ~2% zero or negative price (violates price > 0.0)
+        if random.random() < 0.02:
+            price = Decimal("0.00")
 
         product_rows.append({
             "category_id": cat_id,
             "product_name": item["product_name"],
             "sku": item["sku"],
-            "price": item["price"],
+            "price": price,
             "stock_quantity": item["stock_quantity"],
             "is_active": True,
             "created_at": now,
@@ -179,6 +206,9 @@ def update_products_inventory(connection, count: int) -> int:
         ),
         {"limit": count},
     ).mappings().all()
+
+    # Sort deterministically by product_id to prevent deadlocks across concurrent runs
+    products = sorted(products, key=lambda p: p["product_id"])
 
     updated = 0
     now = datetime.now(UTC)
@@ -224,10 +254,16 @@ def create_incremental_customers(connection, count: int) -> list[int]:
 
     for _ in range(count):
         cust = generate_indian_customer()
+        email = cust["email"]
+
+        # Anomaly injection: ~2% malformed email (violates email regex check)
+        if random.random() < 0.02:
+            email = f"user_{uuid.uuid4().hex[:6]}@bad_domain"
+
         customer_rows.append({
             "first_name": cust["first_name"],
             "last_name": cust["last_name"],
-            "email": cust["email"],
+            "email": email,
             "phone": cust["phone"],
             "city": cust["city"],
             "state": cust["state"],
@@ -252,6 +288,9 @@ def update_customers_profile(connection, count: int) -> int:
         text("SELECT customer_id FROM customers ORDER BY RANDOM() LIMIT :limit"),
         {"limit": count},
     ).scalars().all()
+
+    # Sort deterministically to prevent cross-process deadlocks
+    customer_ids = sorted(customer_ids)
 
     now = datetime.now(UTC)
     updated = 0
@@ -359,17 +398,29 @@ def generate_orders_and_payments(
         for p in selected_prods:
             qty = random.choices([1, 2, 3], weights=[80, 15, 5], k=1)[0]
             unit_price = p["price"]
+            item_status = "ORDERED"
+
+            # Anomaly injection for order items (~2-3% rate)
+            item_rand = random.random()
+            if item_rand < 0.015:
+                qty = 0  # Violates quantity > 0 range check
+            elif item_rand < 0.025:
+                unit_price = Decimal("-10.00")  # Violates unit_price >= 0.0 range check
+            elif item_rand < 0.035:
+                item_status = "UNKNOWN_ITEM_STATUS"  # Violates item_status allowed_values
+
             subtotal += unit_price * qty
 
             items_for_this_order.append({
                 "product_id": p["product_id"],
                 "quantity": qty,
                 "unit_price": unit_price,
-                "item_status": "ORDERED",
+                "item_status": item_status,
                 "created_at": now,
                 "updated_at": now,
             })
-            stock_decrements[p["product_id"]] = stock_decrements.get(p["product_id"], 0) + qty
+            if qty > 0:
+                stock_decrements[p["product_id"]] = stock_decrements.get(p["product_id"], 0) + qty
 
         # Discount
         discount = Decimal("0.00")
@@ -416,22 +467,46 @@ def generate_orders_and_payments(
                 initial_status = "PENDING"
                 failed_payments += 1
 
+        # Anomaly injection for orders (~2% rate)
+        order_rand = random.random()
+        order_date = now
+        if order_rand < 0.01:
+            # Violates allowed_values
+            initial_status = random.choice([
+                "UNKNOWN_STATUS", "SUSPENDED", "PENDING_VERIFICATION"
+            ])
+        elif order_rand < 0.02:
+            order_total = Decimal("-49.99")  # Violates total_amount >= 0.0 range check
+        elif order_rand < 0.025:
+            order_date = now + timedelta(days=2)  # Violates cannot_be_future
+
         order_insert_rows.append({
             "customer_id": customer_id,
             "store_id": store_id,
             "order_status": initial_status,
-            "order_date": now,
+            "order_date": order_date,
             "total_amount": order_total,
             "created_at": now,
             "updated_at": now,
         })
 
         pre_order_items.append(items_for_this_order)
+
+        payment_amount = order_total
+        # Anomaly injection for payments (~2% rate)
+        pay_rand = random.random()
+        if payment_status == "SUCCESS" and pay_rand < 0.015:
+            paid_at = None  # Violates conditional rule: SUCCESS => paid_at IS NOT NULL
+        elif pay_rand < 0.025:
+            payment_amount = Decimal("0.00")  # Violates amount > 0.0 range check
+        elif pay_rand < 0.035:
+            payment_status = "CHARGEBACK"  # Violates payment_status allowed_values
+
         pre_payments.append({
             "payment_method_id": selected_method["payment_method_id"],
             "method_name": method_name,
             "payment_status": payment_status,
-            "amount": order_total,
+            "amount": payment_amount,
             "paid_at": paid_at,
             "created_at": now,
             "updated_at": now,
@@ -468,8 +543,9 @@ def generate_orders_and_payments(
     connection.execute(order_items_table.insert(), all_order_items)
     connection.execute(payments_table.insert(), all_payments)
 
-    # 5. Decrement inventory stock
-    for prod_id, qty_bought in stock_decrements.items():
+    # 5. Decrement inventory stock (sorted by prod_id to guarantee deterministic lock order)
+    for prod_id in sorted(stock_decrements.keys()):
+        qty_bought = stock_decrements[prod_id]
         connection.execute(
             text("""
                 UPDATE products
@@ -506,6 +582,9 @@ def update_orders_lifecycle(connection, count: int) -> int:
         """),
         {"limit": count},
     ).mappings().all()
+
+    # Sort deterministically to prevent concurrent update deadlocks
+    active_orders = sorted(active_orders, key=lambda o: o["order_id"])
 
     now = datetime.now(UTC)
     updated = 0
@@ -840,6 +919,9 @@ def process_product_returns(connection, return_count: int) -> dict:
         {"limit": return_count},
     ).mappings().all()
 
+    # Sort deterministically to prevent concurrent return deadlocks
+    delivered_orders = sorted(delivered_orders, key=lambda o: o["order_id"])
+
     if not delivered_orders:
         return {
             "partial_returns": 0,
@@ -1012,24 +1094,30 @@ def run_incremental_seed_generation(batch_number: int = 1) -> dict:
     logger.info("FLIPKART EVENT SIMULATOR | BATCH #%d START", batch_number)
     logger.info("=" * 65)
 
-    with engine.begin() as connection:
-        # 1. NEW PRODUCTS
-        products_to_create = random.randint(NEW_PRODUCTS_MIN, NEW_PRODUCTS_MAX)
-        products_inserted = create_incremental_products(connection, products_to_create)
+    # Phase 1 & 2: Products (Insert & Update)
+    def _phase_products():
+        with engine.begin() as connection:
+            p_to_create = random.randint(NEW_PRODUCTS_MIN, NEW_PRODUCTS_MAX)
+            p_inserted = create_incremental_products(connection, p_to_create)
+            p_to_update = random.randint(PRODUCT_UPDATES_MIN, PRODUCT_UPDATES_MAX)
+            p_updated = update_products_inventory(connection, p_to_update)
+            return p_inserted, p_updated
 
-        # 2. PRODUCT UPDATES
-        products_to_update = random.randint(PRODUCT_UPDATES_MIN, PRODUCT_UPDATES_MAX)
-        products_updated = update_products_inventory(connection, products_to_update)
+    products_inserted, products_updated = with_deadlock_retry(_phase_products)
 
-        # 3. NEW CUSTOMER SIGNUPS
-        customers_to_create = random.randint(NEW_CUSTOMERS_MIN, NEW_CUSTOMERS_MAX)
-        new_customer_ids = create_incremental_customers(connection, customers_to_create)
+    # Phase 3 & 4: Customers (Signups & Profile Updates)
+    def _phase_customers():
+        with engine.begin() as connection:
+            c_to_create = random.randint(NEW_CUSTOMERS_MIN, NEW_CUSTOMERS_MAX)
+            new_c_ids = create_incremental_customers(connection, c_to_create)
+            c_to_update = random.randint(CUSTOMER_UPDATES_MIN, CUSTOMER_UPDATES_MAX)
+            c_updated = update_customers_profile(connection, c_to_update)
+            return new_c_ids, c_updated
 
-        # 4. CUSTOMER PROFILE UPDATES
-        cust_updates_count = random.randint(CUSTOMER_UPDATES_MIN, CUSTOMER_UPDATES_MAX)
-        customers_updated = update_customers_profile(connection, cust_updates_count)
+    new_customer_ids, customers_updated = with_deadlock_retry(_phase_customers)
 
-        # 5. FETCH EXISTING POOLS
+    # Phase 5: Fetch Master Data Pools (Read-only query without write locks)
+    with engine.connect() as connection:
         all_customer_ids = connection.execute(
             select(customers_table.c.customer_id)
         ).scalars().all()
@@ -1055,54 +1143,69 @@ def run_incremental_seed_generation(batch_number: int = 1) -> dict:
             )
         ).mappings().all()
 
-        # Format products with Decimal money
-        active_products = [
-            {"product_id": p["product_id"], "price": money(p["price"])}
-            for p in products
-        ]
+    active_products = [
+        {"product_id": p["product_id"], "price": money(p["price"])}
+        for p in products
+    ]
 
-        # 6. GENERATE REALISTIC ORDERS & LINKED PAYMENTS (MINIMUM 1,000 ORDERS)
-        order_count = random.randint(NEW_ORDERS_MIN, NEW_ORDERS_MAX)
-        order_metrics = generate_orders_and_payments(
-            connection=connection,
-            order_count=order_count,
-            existing_customer_ids=all_customer_ids,
-            new_customer_ids=new_customer_ids,
-            store_ids=store_ids,
-            products=active_products,
-            payment_methods=payment_methods,
-        )
+    # Phase 6: Orders & Linked Payments
+    def _phase_orders():
+        with engine.begin() as connection:
+            order_count = random.randint(NEW_ORDERS_MIN, NEW_ORDERS_MAX)
+            return generate_orders_and_payments(
+                connection=connection,
+                order_count=order_count,
+                existing_customer_ids=all_customer_ids,
+                new_customer_ids=new_customer_ids,
+                store_ids=store_ids,
+                products=active_products,
+                payment_methods=payment_methods,
+            )
 
-        # 7. PAYMENT RETRIES (SIMULATE CUSTOMERS RETRYING FAILED PAYMENTS)
-        method_weights = []
-        for pm in payment_methods:
-            name = pm["method_name"]
-            if "UPI" in name:
-                method_weights.append(55)
-            elif "Credit" in name:
-                method_weights.append(18)
-            elif "Debit" in name:
-                method_weights.append(12)
-            elif "Cash" in name:
-                method_weights.append(10)
-            else:
-                method_weights.append(5)
+    order_metrics = with_deadlock_retry(_phase_orders)
 
-        retries_to_process = random.randint(PAYMENT_RETRIES_MIN, PAYMENT_RETRIES_MAX)
-        retry_metrics = retry_pending_payments(
-            connection=connection,
-            payment_methods=payment_methods,
-            method_weights=method_weights,
-            max_retries_to_process=retries_to_process,
-        )
+    # Phase 7: Payment Retries (1:N)
+    method_weights = []
+    for pm in payment_methods:
+        name = pm["method_name"]
+        if "UPI" in name:
+            method_weights.append(55)
+        elif "Credit" in name:
+            method_weights.append(18)
+        elif "Debit" in name:
+            method_weights.append(12)
+        elif "Cash" in name:
+            method_weights.append(10)
+        else:
+            method_weights.append(5)
 
-        # 8. ORDER LIFECYCLE PROGRESSION (DELIVERIES & CANCELLATIONS)
-        order_update_count = random.randint(ORDER_UPDATES_MIN, ORDER_UPDATES_MAX)
-        orders_updated = update_orders_lifecycle(connection, order_update_count)
+    def _phase_retries():
+        with engine.begin() as connection:
+            retries_to_process = random.randint(PAYMENT_RETRIES_MIN, PAYMENT_RETRIES_MAX)
+            return retry_pending_payments(
+                connection=connection,
+                payment_methods=payment_methods,
+                method_weights=method_weights,
+                max_retries_to_process=retries_to_process,
+            )
 
-        # 9. PRODUCT RETURNS (PARTIAL & FULL RETURNS ON DELIVERED ORDERS)
-        returns_to_process = random.randint(ORDER_RETURNS_MIN, ORDER_RETURNS_MAX)
-        return_metrics = process_product_returns(connection, returns_to_process)
+    retry_metrics = with_deadlock_retry(_phase_retries)
+
+    # Phase 8: Order Lifecycle Transitions
+    def _phase_lifecycle():
+        with engine.begin() as connection:
+            order_update_count = random.randint(ORDER_UPDATES_MIN, ORDER_UPDATES_MAX)
+            return update_orders_lifecycle(connection, order_update_count)
+
+    orders_updated = with_deadlock_retry(_phase_lifecycle)
+
+    # Phase 9: Product Returns
+    def _phase_returns():
+        with engine.begin() as connection:
+            returns_to_process = random.randint(ORDER_RETURNS_MIN, ORDER_RETURNS_MAX)
+            return process_product_returns(connection, returns_to_process)
+
+    return_metrics = with_deadlock_retry(_phase_returns)
 
     elapsed = time.time() - start_time
 
