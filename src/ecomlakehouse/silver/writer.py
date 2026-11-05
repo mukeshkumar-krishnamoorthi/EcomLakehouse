@@ -30,8 +30,7 @@ def write_df_to_silver(
 
     temp_dir = tempfile.mkdtemp(prefix=f"silver_{table_name}_")
     try:
-        num_partitions = 1 if df.count() < 250_000 else 4
-        df.coalesce(num_partitions).write.mode("overwrite").parquet(temp_dir)
+        df.coalesce(1).write.mode("overwrite").parquet(temp_dir)
 
         parquet_files = [
             f
@@ -74,8 +73,7 @@ def write_quarantine_to_silver(
 
     temp_dir = tempfile.mkdtemp(prefix=f"quarantine_{table_name}_")
     try:
-        num_partitions = 1 if df.count() < 250_000 else 4
-        df.coalesce(num_partitions).write.mode("overwrite").parquet(temp_dir)
+        df.coalesce(1).write.mode("overwrite").parquet(temp_dir)
 
         parquet_files = [
             f
