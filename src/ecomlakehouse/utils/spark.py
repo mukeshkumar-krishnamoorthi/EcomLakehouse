@@ -11,8 +11,10 @@ def get_spark(include_packages: bool = False):
     builder = (
         SparkSession.builder
         .appName("EcomLakehouse")
-        .config("spark.driver.memory", "1g")
-        .config("spark.sql.shuffle.partitions", "4")
+        .config("spark.driver.memory", driver_memory)
+        .config("spark.driver.maxResultSize", "1g")
+        .config("spark.sql.shuffle.partitions", shuffle_partitions)
+        .config("spark.ui.port", "4040")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.endpoint", s3_endpoint)
         .config("spark.hadoop.fs.s3a.access.key", s3_access_key)

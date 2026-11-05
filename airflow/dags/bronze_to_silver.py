@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from airflow.sdk import Asset, dag, get_current_context, task
 
-from ecomlakehouse.constents.tables import SOURCE_TABLES
+from ecomlakehouse.constents.tables import BRONZE_TABLES
 from ecomlakehouse.ingestion.checkpoint import (
     get_checkpoint,
     save_checkpoint,
@@ -25,6 +25,9 @@ CHECKPOINT = "BRONZE_TO_SILVER"
 BRONZE_INGESTION_ASSET = Asset(
     "ecomlakehouse://bronze/ingestion_completed"
 )
+SILVER_INGESTION_ASSET = Asset(
+    "ecomlakehouse://silver/ingestion_completed"
+)
 
 TABLE_PRIMARY_KEYS = {
     "categories": ["category_id"],
@@ -44,27 +47,47 @@ TABLE_PRIMARY_KEYS = {
     schedule=[BRONZE_INGESTION_ASSET],
     catchup=False,
     tags=["Bronze", "Silver", "Asset"],
+    max_active_runs=1,
+    doc_md='''
+    ### Bronze to Silver Ingestion DAG
+    This DAG incrementally transforms Bronze-layered data into Silver-layered tables.
+    It uses a checkpointing mechanism to track the last processed key for each table.
+    '''
 )
 def incremental_bronze_to_silver():
 
     @task
-    def ingest_table(table_name: str) -> dict:
+    def read_checkpoints() -> dict:
+        """Read persistent watermarks for all bronze tables."""
+
+        checkpoints = {
+            table_name: get_checkpoint(
+                checkpoint=CHECKPOINT,
+                table_name=table_name,
+            )
+            for table_name in BRONZE_TABLES
+        }
+
+        logger.info("Loaded %d checkpoints", len(checkpoints))
+        return checkpoints
+
+    @task
+    def transform_data(
+        table_name: str,
+        checkpoint: str | None
+    ) -> dict:
+        """Extract bronze data and stage it in MinIO as Parquet."""
+
         context = get_current_context()
         run_id = context.get("run_id")
 
-        # 1. Load active checkpoint
-        checkpoint_data = get_checkpoint(
-            checkpoint=CHECKPOINT,
-            table_name=table_name,
-        )
         last_key = (
-            (checkpoint_data.get("watermark_end")
-             or checkpoint_data.get("last_processed_key"))
-            if isinstance(checkpoint_data, dict)
-            else checkpoint_data
+            (checkpoint.get("watermark_end")
+             or checkpoint.get("last_processed_key"))
+            if isinstance(checkpoint, dict)
+            else checkpoint
         )
 
-        # 2. Extract bounded batch of new Bronze files directly into Spark
         spark = get_spark()
         spark_df, latest_key, has_more, cache_dir = extract_data_from_bronze(
             spark=spark,
@@ -83,6 +106,15 @@ def incremental_bronze_to_silver():
                 "rows_extracted": 0,
             }
 
+        rows_extracted = spark_df.count()
+        logger.info(
+            "Extracted %d rows from %s (key range: %s…%s)",
+            rows_extracted,
+            table_name,
+            last_key or "(start)",
+            latest_key,
+        )
+
         try:
             # 3. Apply YAML-driven data quality rules
             validator = DataQualityValidator(table_name=table_name)
@@ -100,15 +132,6 @@ def incremental_bronze_to_silver():
             valid_count = valid_df.count()
             quarantine_count = quarantine_df.count()
             total_extracted = valid_count + quarantine_count
-
-            logger.info(
-                "%s: extracted=%s, valid=%s, quarantined=%s (has_more_files=%s)",
-                table_name,
-                total_extracted,
-                valid_count,
-                quarantine_count,
-                has_more,
-            )
 
             committed_files = []
 
@@ -135,19 +158,6 @@ def incremental_bronze_to_silver():
                 )
                 committed_files.extend(s_files)
 
-            # 6. Commit checkpoint (both active pointer and historical run archive)
-            save_checkpoint(
-                checkpoint=CHECKPOINT,
-                table_name=table_name,
-                last_processed_key=latest_key,
-                run_id=run_id,
-                watermark_start=str(last_key) if last_key else None,
-                watermark_end=latest_key,
-                rows_extracted=total_extracted,
-                committed_files=committed_files,
-                status="success",
-            )
-
             valid_df.unpersist()
             quarantine_df.unpersist()
 
@@ -165,15 +175,80 @@ def incremental_bronze_to_silver():
                 "rows_quarantined": quarantine_count,
                 "last_processed_key": latest_key,
                 "has_more": has_more,
+                "watermark_start": str(last_key) if last_key else None,
+                "watermark_end": latest_key,
+                "committed_files": committed_files,
             }
         finally:
             if cache_dir and os.path.exists(cache_dir):
                 shutil.rmtree(cache_dir, ignore_errors=True)
 
-    for table_name in SOURCE_TABLES:
-        ingest_table.override(
-            task_id=f"ingest_{table_name}"
-        )(table_name)
+    @task
+    def commit_checkpoint(result: dict) -> dict:
+        """Advance the checkpoint only after a successful silver write."""
+
+        if result["status"] == "no_changes":
+            return result
+
+        context = get_current_context()
+        run_id = context["run_id"]
+
+        save_checkpoint(
+            checkpoint=CHECKPOINT,
+            table_name=result["table_name"],
+            last_processed_key=result["last_processed_key"],
+            run_id=run_id,
+            watermark_start=result.get("start_time"),
+            watermark_end=result["latest_checkpoint"],
+            rows_extracted=result.get("rows", 0),
+            rows_written=result.get("rows_written", 0),
+            rows_quarantined=result.get("rows_quarantined", 0),
+            committed_files=result["committed_files"],
+            status=result.get("status", "success")
+        )
+
+        logger.info(
+            "Checkpoint committed | table=%s | checkpoint=%s",
+            result["table_name"],
+            result["latest_checkpoint"],
+        )
+
+        return {
+            "table_name": result["table_name"],
+            "status": "success",
+            "rows": result["rows"],
+            "checkpoint": result["latest_checkpoint"],
+        }
+
+    @task(outlets=[SILVER_INGESTION_ASSET])
+    def complete_silver_ingestion(commits: list) -> dict:
+        """Signal that all source tables have finished bronze ingestion."""
+        logger.info(
+            "Bronze ingestion completed for all %d tables. Emitted Asset event: %s",
+            len(commits),
+            SILVER_INGESTION_ASSET.uri,
+        )
+        return {"status": "completed", "tables": len(commits)}
+
+    checkpoints = read_checkpoints()
+    commits = []
+
+    for table_name in BRONZE_TABLES:
+
+        result = transform_data.override(
+            task_id=f"transform_{table_name}"
+        )(
+            table_name=table_name,
+            checkpoint=checkpoints[table_name]
+        )
+
+        commit = commit_checkpoint.override(
+            task_id=f"commit_{table_name}"
+        )(result)
+
+        commits.append(commit)
+
+    complete_silver_ingestion(commits)
 
 
 incremental_bronze_to_silver()

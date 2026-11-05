@@ -44,6 +44,12 @@ def temp_key(run_id: str, table_name: str) -> str:
     schedule="0/5 * * * *",
     catchup=False,
     tags=["Incremental", "Postgres", "Bronze"],
+    max_active_runs=1,
+    doc_md='''
+    ### Incremental Bronze Ingestion DAG
+    This DAG incrementally ingests data from Postgres tables to the Bronze layer.
+    It uses a checkpointing mechanism to track the last processed key for each table.
+    '''
 )
 def incremental_bronze_ingestion():
 
@@ -296,7 +302,7 @@ def incremental_bronze_ingestion():
         }
 
     @task(outlets=[BRONZE_INGESTION_ASSET])
-    def complete_ingestion(commits: list) -> dict:
+    def complete_bronze_ingestion(commits: list) -> dict:
         """Signal that all source tables have finished bronze ingestion."""
         logger.info(
             "Bronze ingestion completed for all %d tables. Emitted Asset event: %s",
@@ -330,7 +336,7 @@ def incremental_bronze_ingestion():
 
         commits.append(committed)
 
-    complete_ingestion(commits)
+    complete_bronze_ingestion(commits)
 
 
 incremental_bronze_ingestion()
