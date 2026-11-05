@@ -7,6 +7,8 @@ def get_spark(include_packages: bool = False):
     s3_endpoint = os.getenv("S3_ENDPOINT", "http://ecom-minio:9000")
     s3_access_key = os.getenv("S3_ACCESS_KEY", "minioadmin")
     s3_secret_key = os.getenv("S3_SECRET_KEY", "minioadmin123")
+    driver_memory = os.getenv("SPARK_DRIVER_MEMORY", "2g")
+    shuffle_partitions = os.getenv("SPARK_SHUFFLE_PARTITIONS", "16")
 
     builder = (
         SparkSession.builder

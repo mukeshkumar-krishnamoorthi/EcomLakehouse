@@ -48,6 +48,7 @@ TABLE_PRIMARY_KEYS = {
     catchup=False,
     tags=["Bronze", "Silver", "Asset"],
     max_active_runs=1,
+    max_active_tasks=2,
     doc_md='''
     ### Bronze to Silver Ingestion DAG
     This DAG incrementally transforms Bronze-layered data into Silver-layered tables.
@@ -180,6 +181,10 @@ def incremental_bronze_to_silver():
                 "committed_files": committed_files,
             }
         finally:
+            try:
+                spark.stop()
+            except Exception:
+                pass
             if cache_dir and os.path.exists(cache_dir):
                 shutil.rmtree(cache_dir, ignore_errors=True)
 
@@ -192,32 +197,33 @@ def incremental_bronze_to_silver():
 
         context = get_current_context()
         run_id = context["run_id"]
+        checkpoint_val = result.get("watermark_end") or result.get("last_processed_key")
 
         save_checkpoint(
             checkpoint=CHECKPOINT,
             table_name=result["table_name"],
-            last_processed_key=result["last_processed_key"],
+            last_processed_key=checkpoint_val,
             run_id=run_id,
-            watermark_start=result.get("start_time"),
-            watermark_end=result["latest_checkpoint"],
-            rows_extracted=result.get("rows", 0),
+            watermark_start=result.get("watermark_start"),
+            watermark_end=checkpoint_val,
+            rows_extracted=result.get("rows_extracted", 0),
             rows_written=result.get("rows_written", 0),
             rows_quarantined=result.get("rows_quarantined", 0),
-            committed_files=result["committed_files"],
-            status=result.get("status", "success")
+            committed_files=result.get("committed_files", []),
+            status=result.get("status", "success"),
         )
 
         logger.info(
             "Checkpoint committed | table=%s | checkpoint=%s",
             result["table_name"],
-            result["latest_checkpoint"],
+            checkpoint_val,
         )
 
         return {
             "table_name": result["table_name"],
             "status": "success",
-            "rows": result["rows"],
-            "checkpoint": result["latest_checkpoint"],
+            "rows": result.get("rows_written", 0),
+            "checkpoint": checkpoint_val,
         }
 
     @task(outlets=[SILVER_INGESTION_ASSET])
