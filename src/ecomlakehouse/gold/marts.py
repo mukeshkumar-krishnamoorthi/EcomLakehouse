@@ -46,12 +46,12 @@ def build_mart_daily_sales(
                 F.when(
                     F.col("order_status") == "CANCELLED", F.col("order_id")
                 )
-            ).alias("cancelled_orders")
-            .withColumn("mart_updated_at", F.current_timestamp())
-            .orderBy(
-                F.col("order_date").desc(),
-                F.col("gross_revenue_gmv").desc()
-            )
+            ).alias("cancelled_orders"),
+        )
+        .withColumn("mart_updated_at", F.current_timestamp())
+        .orderBy(
+            F.col("order_date").desc(),
+            F.col("gross_revenue_gmv").desc()
         )
     )
 
