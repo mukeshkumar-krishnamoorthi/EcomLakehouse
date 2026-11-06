@@ -48,7 +48,7 @@ TABLE_PRIMARY_KEYS = {
     catchup=False,
     tags=["Bronze", "Silver", "Asset"],
     max_active_runs=1,
-    max_active_tasks=2,
+    max_active_tasks=4,
     doc_md='''
     ### Bronze to Silver Ingestion DAG
     This DAG incrementally transforms Bronze-layered data into Silver-layered tables.
@@ -197,7 +197,8 @@ def incremental_bronze_to_silver():
 
         context = get_current_context()
         run_id = context["run_id"]
-        checkpoint_val = result.get("watermark_end") or result.get("last_processed_key")
+        checkpoint_val = result.get(
+            "watermark_end") or result.get("last_processed_key")
 
         save_checkpoint(
             checkpoint=CHECKPOINT,

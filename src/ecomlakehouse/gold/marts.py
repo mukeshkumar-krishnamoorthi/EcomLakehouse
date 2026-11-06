@@ -1,4 +1,3 @@
-from pyspark.sql.connect.plan import WithColumns
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
